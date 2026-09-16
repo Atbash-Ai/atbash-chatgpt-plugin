@@ -16,6 +16,27 @@ codex plugin marketplace add Atbash-Ai/atbash-chatgpt-plugin --ref main
 
 Then open the Plugins Directory in the desktop app, select the Atbash AI marketplace, and install Atbash Safety. If you already registered another marketplace named `atbash-ai`, choose the source that points to this repository. Configure credentials before enabling and trusting its hook. Review the Atbash hook through `/hooks` and start a new task after installation.
 
+### Test the Windows hook fix branch
+
+The `fix/atbash-explicit-hooks` branch explicitly declares the plugin hook and uses PowerShell-compatible `$env:PLUGIN_ROOT` expansion for `commandWindows`. This fixes the Windows launch failure where Node received a literal `%PLUGIN_ROOT%` path and exited before Atbash could evaluate the tool call.
+
+To install this branch directly from GitHub without publishing it to the OpenAI marketplace, run:
+
+```powershell
+codex plugin marketplace add Atbash-Ai/atbash-chatgpt-plugin --ref fix/atbash-explicit-hooks
+codex plugin add atbash@atbash-ai
+```
+
+If a marketplace named `atbash-ai` is already registered from another branch or source, remove that marketplace registration first, then add the test branch and reinstall the plugin:
+
+```powershell
+codex plugin marketplace remove atbash-ai
+codex plugin marketplace add Atbash-Ai/atbash-chatgpt-plugin --ref fix/atbash-explicit-hooks
+codex plugin add atbash@atbash-ai
+```
+
+After installation, fully restart Codex, open `/hooks`, and trust the changed Atbash hook definition. Start a new task before testing automatic `PreToolUse` enforcement. A manual invocation of `pre-tool-use.cjs` verifies the runtime only; use a normal harmless tool call to verify that Codex invokes the hook automatically.
+
 ## Configure your agent locally
 
 Create `~/.config/atbash/config.json` on macOS/Linux or `%USERPROFILE%\.config\atbash\config.json` on Windows, using a local editor outside the conversation:
