@@ -87,6 +87,7 @@ Never diagnose key mismatch by asking to inspect the private key. Ask the user t
 - `HOLD`: Codex blocks this attempt pending operator review. After approval in Atbash, the user must explicitly retry the original request.
 - `BLOCK`: Codex blocks the tool call.
 - `ERROR`, timeout, malformed output, missing configuration, or inconsistent output: Codex blocks the tool call because the hook is fail closed.
+- Judge still pending at the hard deadline (`ATBASH_HOOK_DEADLINE_MS`, default 28,000 ms), or the hook runtime cannot load or crashes: the entry-point shim writes the deny itself, so the host never sees a timed-out or crashed hook.
 
 Do not claim that the plugin covers plain text responses, hosted tools that opt out of hooks, or every possible Codex capability. It guards tool calls exposed to the `PreToolUse` lifecycle hook.
 

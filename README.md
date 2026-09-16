@@ -4,6 +4,13 @@ Atbash Safety evaluates supported Codex tool calls against your Atbash agent's p
 
 Only `allow: true` with verdict `ALLOW` permits the pending call. `HOLD`, `BLOCK`, invalid configuration, timeout, and service errors deny that attempt. Coverage is limited to tools exposed to the host's `PreToolUse` hook; plain text responses and tools outside that lifecycle are not covered.
 
+### The host boundary
+
+A `PreToolUse` host lets a tool call proceed when the hook times out or exits without a decision. Two failures that would silently remove the gate are therefore handled by the entry point itself (`plugins/atbash/runtime/pre-tool-use.cjs`, a small un-bundled shim that loads the bundled hook `runtime/pre-tool-use-main.cjs`):
+
+- **Hard deadline.** The SDK budget (`ATBASH_HOOK_TIMEOUT_MS`, default 30,000 ms) applies per request, and one judgment is several requests, so a slow but alive judge could outlive the 35 s hook timeout in `hooks/hooks.json`. The shim denies the call at `ATBASH_HOOK_DEADLINE_MS` (default 28,000 ms; accepted range 1,000-34,000) if no decision has been written yet. An invalid value denies every call rather than running without a deadline.
+- **Runtime failure.** A bundled hook that cannot load, throws asynchronously, or leaves a promise rejected exits with a deny (exit code 0) instead of exit code 1 and no output. The deny text is fixed; nothing from the failure is echoed to the host.
+
 ## Install the complete plugin
 
 Use Node.js 22.13.0 or newer on macOS arm64, Linux x64/arm64 (glibc), or Windows x64. The SDK and its native bindings are bundled; end users do not need to run npm install or compile the plugin.
