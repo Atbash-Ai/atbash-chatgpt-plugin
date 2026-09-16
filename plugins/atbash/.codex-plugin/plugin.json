@@ -10,6 +10,7 @@
   "repository": "https://github.com/Atbash-Ai/atbash-chatgpt-plugin",
   "keywords": ["atbash", "codex", "safety", "policy", "guardrails"],
   "skills": "./skills/",
+  "hooks": "./hooks/hooks.json",
   "interface": {
     "displayName": "Atbash Safety",
     "shortDescription": "Guard tool calls with Atbash",

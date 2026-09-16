@@ -55,7 +55,8 @@ test("Codex manifest matches the accepted plugin identity", async () => {
   assert.equal(manifest.name, "atbash");
   assert.equal(manifest.interface?.displayName, "Atbash Safety");
   assert.equal(manifest.skills, "./skills/");
-  assert.equal(manifest.hooks, undefined);
+  assert.equal(manifest.hooks, "./hooks/hooks.json");
+  await readJson(join(process.cwd(), manifest.hooks));
   assert.equal(manifest.mcpServers, undefined);
 });
 
