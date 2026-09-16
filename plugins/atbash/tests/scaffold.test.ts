@@ -37,6 +37,7 @@ interface HookManifest {
       hooks?: Array<{
         type?: unknown;
         command?: unknown;
+        commandWindows?: unknown;
         timeout?: unknown;
       }>;
     }>;
@@ -82,5 +83,6 @@ test("hook bundle declares catch-all PreToolUse enforcement", async () => {
   assert.equal(matcher?.matcher, "*");
   assert.equal(handler?.type, "command");
   assert.equal(handler?.command, 'node "$PLUGIN_ROOT/runtime/pre-tool-use.cjs"');
+  assert.equal(handler?.commandWindows, 'node "$env:PLUGIN_ROOT\\runtime\\pre-tool-use.cjs"');
   assert.equal(handler?.timeout, 35);
 });
