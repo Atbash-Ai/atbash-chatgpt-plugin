@@ -8,8 +8,9 @@ Only `allow: true` with verdict `ALLOW` permits the pending call. `HOLD`, `BLOCK
 
 A `PreToolUse` host lets a tool call proceed when the hook times out or exits without a decision. Two failures that would silently remove the gate are therefore handled by the entry point itself (`plugins/atbash/runtime/pre-tool-use.cjs`, a small un-bundled shim that loads the bundled hook `runtime/pre-tool-use-main.cjs`):
 
-- **Hard deadline.** The SDK budget (`ATBASH_HOOK_TIMEOUT_MS`, default 30,000 ms) applies per request, and one judgment is several requests, so a slow but alive judge could outlive the 35 s hook timeout in `hooks/hooks.json`. The shim denies the call at `ATBASH_HOOK_DEADLINE_MS` (default 28,000 ms; accepted range 1,000-34,000) if no decision has been written yet. An invalid value denies every call rather than running without a deadline.
+- **Hard deadline.** The SDK budget (`ATBASH_CODEX_TIMEOUT_MS`, default 30,000 ms) applies per request, and one judgment is several requests, so a slow but alive judge could outlive the 35 s hook timeout in `hooks/hooks.json`. The shim denies the call at `ATBASH_HOOK_DEADLINE_MS` (default 28,000 ms; accepted range 1,000-30,000, so that node start-up and the bundle load always fit under the host timeout) unless the bundled hook has already written its decision. An invalid value denies every call rather than running without a deadline.
 - **Runtime failure.** A bundled hook that cannot load, throws asynchronously, or leaves a promise rejected exits with a deny (exit code 0) instead of exit code 1 and no output. The deny text is fixed; nothing from the failure is echoed to the host.
+- **What the shim cannot close.** The deny is written synchronously, and if standard output cannot be written at all the shim exits with code 2 (a blocking error for the host) rather than 0 with an empty, permit-shaped output. A synchronous hang inside the bundle or the native SDK addon keeps the event loop from running the deadline timer at all; only the host timeout ends that, and that case is fail open at the host.
 
 ## Install the complete plugin
 
