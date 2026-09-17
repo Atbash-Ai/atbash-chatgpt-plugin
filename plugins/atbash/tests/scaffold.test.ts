@@ -3,6 +3,8 @@ import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import test from "node:test";
 
+import { buildAtbashEntry } from "../src/install-hook/hooks-file.js";
+
 interface PluginManifest {
   name?: unknown;
   skills?: unknown;
@@ -39,6 +41,7 @@ interface HookManifest {
         command?: unknown;
         commandWindows?: unknown;
         timeout?: unknown;
+        statusMessage?: unknown;
       }>;
     }>;
   };
@@ -84,4 +87,31 @@ test("hook bundle declares catch-all PreToolUse enforcement", async () => {
   assert.equal(handler?.command, 'node "$PLUGIN_ROOT/runtime/pre-tool-use.cjs"');
   assert.equal(handler?.commandWindows, 'node "%PLUGIN_ROOT%\\runtime\\pre-tool-use.cjs"');
   assert.equal(handler?.timeout, 35);
+});
+
+test("the user-level installer writes the entry hooks.json declares, with the placeholder resolved", async () => {
+  // Codex 0.154+ does not load hooks/hooks.json from a plugin; install-hook.cjs writes the same
+  // entry into the user's own hooks file. The two must not drift: same matcher, type, timeout and
+  // status message, and the same command with $PLUGIN_ROOT / %PLUGIN_ROOT% replaced by a real path.
+  const hookManifest = await readJson<HookManifest>(join(process.cwd(), "hooks", "hooks.json"));
+  const declared = hookManifest.hooks?.PreToolUse?.[0];
+  const declaredHook = declared?.hooks?.[0];
+  assert.ok(declaredHook);
+
+  const installed = buildAtbashEntry("C:\\plugins\\atbash\\runtime\\pre-tool-use.cjs", "win32");
+  const installedHook = installed.hooks[0];
+  assert.ok(installedHook);
+  assert.equal(installed.matcher, declared?.matcher);
+  assert.equal(installedHook.type, declaredHook.type);
+  assert.equal(installedHook.timeout, declaredHook.timeout);
+  assert.equal(installedHook.statusMessage, declaredHook.statusMessage);
+  assert.equal(
+    installedHook.command,
+    String(declaredHook.command).replace("$PLUGIN_ROOT", "C:/plugins/atbash"),
+  );
+  assert.equal(
+    installedHook.commandWindows,
+    String(declaredHook.commandWindows).replace("%PLUGIN_ROOT%", "C:\\plugins\\atbash"),
+  );
+  assert.deepEqual(Object.keys(installedHook).sort(), Object.keys(declaredHook).sort());
 });

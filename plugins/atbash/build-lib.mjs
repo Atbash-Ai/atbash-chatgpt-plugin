@@ -22,6 +22,8 @@ export async function bundleAtbash(outdir, { minify = false, sourcemap = true } 
       // below); the bundled hook it loads is pre-tool-use-main.cjs.
       "pre-tool-use-main": "src/pre-tool-use.ts",
       status: "src/status.ts",
+      // The user-level hooks.json installer: Codex 0.154+ does not load a plugin's own hooks.
+      "install-hook": "src/install-hook.ts",
     },
     format: "cjs",
     legalComments: "none",
@@ -56,7 +58,7 @@ export async function bundleAtbash(outdir, { minify = false, sourcemap = true } 
     target: "node22",
   });
 
-  for (const entry of ["index", "pre-tool-use-main", "status"]) {
+  for (const entry of ["index", "pre-tool-use-main", "status", "install-hook"]) {
     const outputPath = join(outdir, `${entry}.cjs`);
     const source = await readFile(outputPath, "utf8");
     await writeFile(outputPath, source.replaceAll("\t", "  "), "utf8");
@@ -73,6 +75,7 @@ export async function bundleAtbash(outdir, { minify = false, sourcemap = true } 
     ["pre-tool-use", 0o644],
     ["pre-tool-use-main", 0o755],
     ["status", 0o755],
+    ["install-hook", 0o755],
   ]) {
     await chmod(join(outdir, `${entry}.cjs`), mode);
   }
