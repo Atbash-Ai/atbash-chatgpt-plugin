@@ -39,7 +39,6 @@ import {
   type InstallContext,
   type InstallHookOptions,
 } from "../src/install-hook/cli.js";
-import { inspectRegistration, summarizeRegistrations } from "../src/install-hook/registration.js";
 import {
   HOOK_MATCHER,
   HOOK_STATUS_MESSAGE,
@@ -1008,11 +1007,14 @@ test("install-hook: the registered command string is executable by the host shel
     writeFileSync(fakeNode, "not a program\n");
     const broken = buildAtbashEntry(REAL_HOOK_SCRIPT, process.platform, realpathSync(fakeNode));
     verifyEntryRoundTrip(broken, REAL_HOOK_SCRIPT, realpathSync(fakeNode), process.platform);
+    // A refusal by any of the probe's own reasons: the shell reported an exit, the output was not
+    // one JSON object, or nothing came back within the probe budget (seen on a loaded machine,
+    // where PowerShell start-up alone can exceed it - still a refusal, never a write).
     assert.throws(
       () => probeRegisteredCommand(broken, process.platform),
       (error: unknown) =>
         error instanceof HooksFileRefusal &&
-        /could not be executed by the host shell: (exit \d+|stdout is not one JSON object)/.test(
+        /could not be executed by the host shell: (exit \d+|stdout is not one JSON object|no decision within \d+ ms)/.test(
           error.message,
         ),
     );
@@ -1140,7 +1142,12 @@ test("install-hook: the operator-less quoted command is refused by the host-shel
   }
 });
 
-test("install-hook: status reports no registration as not enforcing, in the summary and not only on stderr", () => {
+test("install-hook: status reports no registration as not enforcing, in the summary and not only on stderr", async () => {
+  // Loaded here, not at the top: registration.js postdates the before-SHAs the proofs of the
+  // older installer fixes carry this file into, and an ESM named import of a missing export fails
+  // at module link, taking every test in the file with it.
+  const { inspectRegistration, summarizeRegistrations } =
+    await import("../src/install-hook/registration.js");
   const home = tempHome();
   try {
     const user = inspectRegistration(join(home, "hooks.json"), IDENTITY);
@@ -1192,7 +1199,51 @@ test("install-hook: a file recreated with the same bytes and a reused inode is n
   }
 });
 
-test("install-hook: status reports a registration whose interpreter or script no longer exists", () => {
+test("install-hook: an entry whose other platform's spelling names our script is not ours, and never enforcing", async () => {
+  // Loaded here, not at the top: registration.js postdates the before-SHAs the proofs of the
+  // older installer fixes carry this file into, and an ESM named import of a missing export fails
+  // at module link, taking every test in the file with it.
+  const { inspectRegistration, summarizeRegistrations } =
+    await import("../src/install-hook/registration.js");
+  // Ownership and spawnability are judged on the spelling the host runs here. An entry whose
+  // POSIX command names this plugin's script while its Windows command names another existing
+  // script (or the reverse) is somebody else's hook wearing our name: a look-alike, not counted,
+  // never reported as enforcing.
+  const home = tempHome();
+  try {
+    const other = join(home, "other-pre-tool-use.cjs");
+    writeFileSync(other, "process.exit(0);\n");
+    const hooksPath = join(home, "hooks.json");
+    const ours = `"${NODE_COMMAND}" "${COMMAND_PATH}"`;
+    const theirs = `${CALL}"${NODE_COMMAND}" "${(WIN32 ? other : other).replaceAll("\\", "/")}"`;
+    const entry = WIN32
+      ? { type: "command", command: `& ${ours}`, commandWindows: `& "${NODE_PATH}" "${other}"` }
+      : { type: "command", command: theirs, commandWindows: `& ${ours}` };
+    writeFileSync(
+      hooksPath,
+      JSON.stringify({
+        hooks: { PreToolUse: [{ matcher: "*", hooks: [{ ...entry, timeout: 35 }] }] },
+      }),
+    );
+    assert.equal(isAtbashHook(entry, IDENTITY), false);
+    assert.equal(isAtbashLookalike(entry, IDENTITY), true);
+    const report = inspectRegistration(hooksPath, IDENTITY);
+    assert.equal(report.registered, 0);
+    assert.equal(report.spawnable, 0);
+    const summary = summarizeRegistrations([report]);
+    assert.equal(summary.enforcing, false);
+    assert.deepEqual(summary.scopes, [{ hooksPath, registered: 0, spawnable: 0 }]);
+  } finally {
+    rmSync(home, { force: true, recursive: true });
+  }
+});
+
+test("install-hook: status reports a registration whose interpreter or script no longer exists", async () => {
+  // Loaded here, not at the top: registration.js postdates the before-SHAs the proofs of the
+  // older installer fixes carry this file into, and an ESM named import of a missing export fails
+  // at module link, taking every test in the file with it.
+  const { inspectRegistration, summarizeRegistrations } =
+    await import("../src/install-hook/registration.js");
   const home = tempHome();
   try {
     const hooksPath = join(home, "hooks.json");

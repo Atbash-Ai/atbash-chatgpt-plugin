@@ -13,6 +13,7 @@ import {
   isAtbashHook,
   isAtbashLookalike,
   parseHookCommand,
+  platformCommand,
   parseHooksFile,
   type AtbashIdentity,
 } from "./hooks-file.js";
@@ -61,11 +62,7 @@ export function inspectRegistration(
       if (!own && !isAtbashLookalike(hook, identity)) continue;
       if (own) report.registered += 1;
       const label = own ? "the registered Atbash hook" : "a hook that looks like Atbash's";
-      const command = hook as { command?: unknown; commandWindows?: unknown };
-      const spelled =
-        identity.platform === "win32"
-          ? (command.commandWindows ?? command.command)
-          : command.command;
+      const spelled = platformCommand(hook, identity.platform);
       const parsed = parseHookCommand(spelled);
       if (parsed === undefined) {
         // The command text comes from a file the user (or, at project scope, a checked-out
@@ -104,7 +101,16 @@ export function inspectRegistration(
   return report;
 }
 
+export interface RegistrationScope {
+  hooksPath: string;
+  registered: number;
+  spawnable: number;
+}
+
 export interface RegistrationSummary {
+  /** Each inspected hooks file with what it holds, so a reader can tell a machine-wide user-level
+   *  entry from a project-level one that covers only the directory Codex is started in. */
+  scopes: RegistrationScope[];
   /** Atbash entries found across every inspected hooks file. */
   registered: number;
   /** Of those, the entries whose interpreter and script exist, so the host can spawn them. */
@@ -125,6 +131,11 @@ export function summarizeRegistrations(
   const registered = reports.reduce((sum, report) => sum + report.registered, 0);
   const spawnable = reports.reduce((sum, report) => sum + report.spawnable, 0);
   return {
+    scopes: reports.map((report) => ({
+      hooksPath: report.hooksPath,
+      registered: report.registered,
+      spawnable: report.spawnable,
+    })),
     registered,
     spawnable,
     enforcing: spawnable > 0,

@@ -204,16 +204,24 @@ export interface AtbashIdentity {
   platform: NodeJS.Platform;
 }
 
-/** The one signal that proves an entry is this plugin's: a command whose script path is this
- *  very hook script. The status message is not proof (any vendor can copy a string), so an entry
- *  carrying it with another script is a look-alike, kept and reported, never replaced or removed. */
+/** The spelling the host runs on this platform: `commandWindows` (falling back to `command`) on
+ *  win32, `command` elsewhere. Ownership and spawnability are both judged on it - an entry whose
+ *  other spelling names this plugin's script while the one the host runs names something else is
+ *  somebody else's hook wearing our name, not ours. */
+export function platformCommand(hook: unknown, platform: NodeJS.Platform): unknown {
+  if (!isPlainObject(hook)) return undefined;
+  return platform === "win32" ? (hook.commandWindows ?? hook.command) : hook.command;
+}
+
+/** The one signal that proves an entry is this plugin's: the command the host runs on this
+ *  platform names this very hook script. The status message is not proof (any vendor can copy a
+ *  string), and neither is the other platform's spelling, so an entry carrying either with another
+ *  script is a look-alike, kept and reported, never replaced or removed. */
 export function isAtbashHook(hook: unknown, identity: AtbashIdentity): boolean {
   if (!isPlainObject(hook)) return false;
   const own = comparablePath(identity.hookScript, identity.platform);
-  return [hook.command, hook.commandWindows].some((command) => {
-    const path = commandScriptPath(command);
-    return path !== undefined && comparablePath(path, identity.platform) === own;
-  });
+  const path = commandScriptPath(platformCommand(hook, identity.platform));
+  return path !== undefined && comparablePath(path, identity.platform) === own;
 }
 
 /** A hook that looks like Atbash's without being provably so: it carries the Atbash status

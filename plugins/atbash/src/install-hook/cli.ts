@@ -47,7 +47,8 @@ hooks shipped inside a plugin. Nothing is written until the file is validated.
 
   --scope user      (default) write <codex home>/hooks.json; codex home is --dir, else
                     $CODEX_HOME, else ~/.codex
-  --scope project   write <project>/.codex/hooks.json; the project is --dir, else the current
+  --scope project   write <project>/.codex/hooks.json (read by Codex only when it is started in
+                    that very directory - a subdirectory session is not covered); the project is --dir, else the current
                     directory
   --dir <path>      the Codex home (user scope) or project directory (project scope)
   --dry-run         print the Atbash entry that would be written and write nothing
