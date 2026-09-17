@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { isAbsolute, join } from "node:path";
 import test from "node:test";
@@ -88,6 +88,23 @@ test("hook bundle declares catch-all PreToolUse enforcement", async () => {
   assert.equal(handler?.command, 'node "$PLUGIN_ROOT/runtime/pre-tool-use.cjs"');
   assert.equal(handler?.commandWindows, 'node "%PLUGIN_ROOT%\\runtime\\pre-tool-use.cjs"');
   assert.equal(handler?.timeout, 35);
+
+  // The bundled entry runs a bare `node` and a `$PLUGIN_ROOT` / `%PLUGIN_ROOT%` the host must
+  // export: on a host that loads plugin hooks it is PATH-dependent, and the documentation must
+  // say so rather than present it as a gate on its own.
+  const readme = readFileSync(join(process.cwd(), "..", "..", "README.md"), "utf8");
+  const skill = readFileSync(join(process.cwd(), "skills", "atbash-setup", "SKILL.md"), "utf8");
+  for (const [name, text] of [
+    ["README.md", readme],
+    ["SKILL.md", skill],
+  ] as const) {
+    assert.match(
+      text,
+      /depends on `node` being on the host's PATH and on `PLUGIN_ROOT` being exported by the host, so it is not a gate on its own/,
+      `${name} must document the bundled entry as PATH-dependent`,
+    );
+  }
+  assert.doesNotMatch(readme, /matching `hooks\/hooks\.json`/, "no parity claim in the README");
 });
 
 test("the user-level installer writes the entry hooks.json declares, with the placeholder resolved", async () => {
@@ -112,9 +129,19 @@ test("the user-level installer writes the entry hooks.json declares, with the pl
   assert.equal(installedHook.statusMessage, declaredHook.statusMessage);
   // Everything but the interpreter token is the same: hooks.json keeps the bare `node` because
   // it is the plugin-bundled form; the installer embeds the absolute node so the hook does not
-  // depend on the PATH of whatever launched Codex.
+  // depend on the PATH of whatever launched Codex, and on Windows prefixes PowerShell's call
+  // operator, without which Codex evaluates the quoted path as a string and runs nothing
+  // (verified on 0.154.0).
+  assert.match(String(installedHook.command), /^& "/, "call operator on win32");
+  assert.match(String(installedHook.commandWindows), /^& "/, "call operator on win32");
+  assert.doesNotMatch(
+    buildAtbashEntry("/opt/atbash/runtime/pre-tool-use.cjs", "linux", "/usr/bin/node").hooks[0]
+      ?.command ?? "&",
+    /^&/,
+    "no call operator for sh",
+  );
   const withoutInterpreter = (command: unknown) =>
-    String(command).replace(/^(?:node|"[^"]+")\s+/, "");
+    String(command).replace(/^(?:&\s+)?(?:node|"[^"]+")\s+/, "");
   assert.equal(
     withoutInterpreter(installedHook.command),
     withoutInterpreter(declaredHook.command).replace("$PLUGIN_ROOT", "C:/plugins/atbash"),

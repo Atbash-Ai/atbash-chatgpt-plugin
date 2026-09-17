@@ -27,6 +27,7 @@ import {
   statSync,
   writeFileSync,
 } from "node:fs";
+import { spawnSync } from "node:child_process";
 import { basename, dirname, isAbsolute, join } from "node:path";
 
 export const HOOK_SCRIPT = "pre-tool-use.cjs";
@@ -61,6 +62,22 @@ function isPlainObject(value: unknown): value is JsonObject {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
+// Which shell runs the command is a fact about the host, not about this file:
+//   - Windows: PowerShell. Verified on the real Codex CLI 0.154.0 (2026-09-17, inline hooks
+//     override): `& "<node>" "<script>"` ran the hook and Codex reported the block, while
+//     `"<node>" "<script>"` (a quoted leading token) ran the tool with NO hook activity - in
+//     PowerShell that is a string expression, not a command. So on win32 both `command` and
+//     `commandWindows` carry the call operator. PowerShell also resolves a native command only
+//     when PATHEXT is set (with it unset it silently runs nothing and exits 0); the probe below
+//     supplies the system default so that a missing PATHEXT cannot fake a pass.
+//   - POSIX: sh, assumed from Claude Code's documented hook contract (Codex is assumed to share
+//     it; not verified on a POSIX Codex host). sh executes a quoted leading token; `&` would be
+//     a background operator there, so the call operator is never emitted on POSIX.
+// The allowlist below excludes `&`, `;` and `|` from paths, so the operator can never be
+// confused with path content. Whatever the shell, the installer does not take the parse on
+// trust: before writing, probeRegisteredCommand runs the exact string through the host's shell
+// and requires a decision back.
+//
 // The command is a shell string. Nothing in it is escaped; the path is allowlisted instead.
 // Letters, digits, space, `_ . : / + @ ( ) -` are literal inside double quotes in sh, cmd and
 // PowerShell (parentheses appear in ordinary Windows folder names such as "New folder (3)").
@@ -133,12 +150,14 @@ export function buildAtbashEntry(
   validateHookScriptPath(interpreter, platform, "node interpreter path");
   const forward = (path: string) => (platform === "win32" ? path.replaceAll("\\", "/") : path);
   const backward = (path: string) => path.replaceAll("/", "\\");
+  // PowerShell needs the call operator to run a quoted program path; sh must not get one.
+  const call = platform === "win32" ? "& " : "";
   const hook: AtbashCommandHook = {
     type: "command",
-    command: `"${forward(interpreter)}" "${forward(hookScript)}"`,
+    command: `${call}"${forward(interpreter)}" "${forward(hookScript)}"`,
     ...(platform === "win32"
       ? {
-          commandWindows: `"${backward(forward(interpreter))}" "${backward(forward(hookScript))}"`,
+          commandWindows: `${call}"${backward(forward(interpreter))}" "${backward(forward(hookScript))}"`,
         }
       : {}),
     timeout: HOOK_TIMEOUT_SECONDS,
@@ -147,11 +166,14 @@ export function buildAtbashEntry(
   return { matcher: HOOK_MATCHER, hooks: [hook] };
 }
 
-// `"<interpreter>" "<script>"` as the installer writes it, or the bare `node "<script>"` of the
-// plugin's hooks.json and of a hand-edited entry, optionally followed by arguments (`--verbose`).
-const COMMAND_PATTERN = /^\s*(?:node|"([^"]+)")\s+"([^"]+)"(?:\s+.*)?$/s;
+// `"<interpreter>" "<script>"` as the installer writes it (with the PowerShell call operator
+// in front on Windows), or the bare `node "<script>"` of the plugin's hooks.json and of a
+// hand-edited entry, optionally followed by arguments (`--verbose`).
+const COMMAND_PATTERN = /^\s*(&\s+)?(?:node|"([^"]+)")\s+"([^"]+)"(?:\s+.*)?$/s;
 
 export interface ParsedHookCommand {
+  /** True when the command starts with PowerShell's call operator `&`. */
+  callOperator: boolean;
   /** Absent for the bare `node` form. */
   interpreter: string | undefined;
   script: string;
@@ -162,8 +184,8 @@ export interface ParsedHookCommand {
 export function parseHookCommand(command: unknown): ParsedHookCommand | undefined {
   if (typeof command !== "string") return undefined;
   const match = COMMAND_PATTERN.exec(command);
-  if (match === null || match[2] === undefined) return undefined;
-  return { interpreter: match[1], script: match[2] };
+  if (match === null || match[3] === undefined) return undefined;
+  return { callOperator: match[1] !== undefined, interpreter: match[2], script: match[3] };
 }
 
 /** The script path a hook command runs, or undefined when the command has another shape. */
@@ -181,11 +203,11 @@ export interface AtbashIdentity {
   platform: NodeJS.Platform;
 }
 
-/** The Atbash-specific signal: the Atbash status message, or a command that names this very
- *  hook script. A hook that merely runs some `pre-tool-use.cjs` is somebody else's. */
+/** The one signal that proves an entry is this plugin's: a command whose script path is this
+ *  very hook script. The status message is not proof (any vendor can copy a string), so an entry
+ *  carrying it with another script is a look-alike, kept and reported, never replaced or removed. */
 export function isAtbashHook(hook: unknown, identity: AtbashIdentity): boolean {
   if (!isPlainObject(hook)) return false;
-  if (hook.statusMessage === HOOK_STATUS_MESSAGE) return true;
   const own = comparablePath(identity.hookScript, identity.platform);
   return [hook.command, hook.commandWindows].some((command) => {
     const path = commandScriptPath(command);
@@ -193,10 +215,13 @@ export function isAtbashHook(hook: unknown, identity: AtbashIdentity): boolean {
   });
 }
 
-/** A hook that runs a script called pre-tool-use.cjs without the Atbash signal: left alone, and
- *  worth telling the user about. */
-export function isForeignPreToolUseScript(hook: unknown, identity: AtbashIdentity): boolean {
+/** A hook that looks like Atbash's without being provably so: it carries the Atbash status
+ *  message, or runs some script called pre-tool-use.cjs, but not this plugin's hook script. Left
+ *  alone, counted as foreign, and worth telling the user about (it may be a stale entry from a
+ *  plugin that moved, or somebody else's hook wearing our name). */
+export function isAtbashLookalike(hook: unknown, identity: AtbashIdentity): boolean {
   if (!isPlainObject(hook) || isAtbashHook(hook, identity)) return false;
+  if (hook.statusMessage === HOOK_STATUS_MESSAGE) return true;
   return [hook.command, hook.commandWindows].some((command) => {
     const path = commandScriptPath(command);
     return path !== undefined && /[\\/]pre-tool-use\.cjs$/.test(path);
@@ -210,6 +235,7 @@ export function verifyEntryRoundTrip(
   entry: AtbashMatcherGroup,
   hookScript: string,
   interpreter: string,
+  platform: NodeJS.Platform,
 ): void {
   for (const hook of entry.hooks) {
     for (const command of [hook.command, hook.commandWindows]) {
@@ -245,6 +271,13 @@ export function verifyEntryRoundTrip(
       if (resolvedInterpreter !== interpreter) {
         throw new HooksFileRefusal(
           `The hook command ${JSON.stringify(command)}: the interpreter resolves to ${resolvedInterpreter}, not to ${interpreter}.`,
+        );
+      }
+      if (parsed.callOperator !== (platform === "win32")) {
+        throw new HooksFileRefusal(
+          platform === "win32"
+            ? `The hook command ${JSON.stringify(command)} lacks the PowerShell call operator; Codex on Windows would evaluate it as a string and run nothing.`
+            : `The hook command ${JSON.stringify(command)} carries a call operator that sh would read as a background job.`,
         );
       }
     }
@@ -338,20 +371,123 @@ export function hasAtbashEntry(document: HooksDocument, identity: AtbashIdentity
   return preToolUseGroups(document).some((group) => hasAtbashHook(group, identity));
 }
 
-/** What a document keeps that is not Atbash's: PreToolUse hooks of other origin, and the hooks
- *  under other events. */
+/** What a document keeps that is not provably Atbash's: PreToolUse hooks of other origin
+ *  (look-alikes included), and the hooks under other events. */
 export function foreignContent(
   document: HooksDocument,
   identity: AtbashIdentity,
-): { foreignHooks: unknown[]; otherEvents: string[]; foreignPreToolUseScripts: unknown[] } {
+): { foreignHooks: unknown[]; otherEvents: string[]; lookalikes: unknown[] } {
   const foreignHooks = preToolUseHooks(document).filter((hook) => !isAtbashHook(hook, identity));
   return {
     foreignHooks,
     otherEvents: Object.keys(document.hooks ?? {}).filter((event) => event !== "PreToolUse"),
-    foreignPreToolUseScripts: foreignHooks.filter((hook) =>
-      isForeignPreToolUseScript(hook, identity),
-    ),
+    lookalikes: foreignHooks.filter((hook) => isAtbashLookalike(hook, identity)),
   };
+}
+
+/** A synthetic PreToolUse payload for the execution probe. With no configuration reachable the
+ *  hook must answer with a deny; that deny is the proof that the host shell can run the command. */
+export const PROBE_PAYLOAD = {
+  hook_event_name: "PreToolUse",
+  tool_name: "probe",
+  tool_input: {},
+  cwd: ".",
+  permission_mode: "default",
+  session_id: "install-probe",
+  model: "probe",
+  tool_use_id: "probe",
+  transcript_path: null,
+  turn_id: "probe",
+};
+
+export const PROBE_TIMEOUT_MS = 15_000;
+
+/** Windows PowerShell by its system path: the probe must not depend on PATH to find the shell. */
+export function windowsPowerShellPath(env: Readonly<Record<string, string | undefined>>): string {
+  const systemRoot = env.SystemRoot ?? env.SYSTEMROOT ?? "C:\\Windows";
+  return join(systemRoot, "System32", "WindowsPowerShell", "v1.0", "powershell.exe");
+}
+
+/** Run the registered command string exactly as the host would - Windows PowerShell
+ *  (`-NoProfile -NonInteractive -Command`) with `commandWindows` and again with `command` on
+ *  win32, `/bin/sh -c` with `command` elsewhere - with the synthetic payload on stdin and an
+ *  environment that has no PATH, no home and no Atbash configuration. Anything but exit 0 and one
+ *  deny decision on stdout is a refusal: a string the shell cannot execute would be a hook that
+ *  never answers, and the host proceeds. */
+export function probeRegisteredCommand(
+  entry: AtbashMatcherGroup,
+  platform: NodeJS.Platform,
+  timeoutMs = PROBE_TIMEOUT_MS,
+): void {
+  const hook = entry.hooks[0];
+  if (hook === undefined) {
+    throw new HooksFileRefusal(
+      "the registered command could not be executed by the host shell: the entry has no hook",
+    );
+  }
+  const commands =
+    platform === "win32" ? [hook.commandWindows ?? hook.command, hook.command] : [hook.command];
+  for (const command of commands) runProbe(command, platform, timeoutMs);
+}
+
+function runProbe(command: string, platform: NodeJS.Platform, timeoutMs: number): void {
+  const fail = (reason: string): never => {
+    throw new HooksFileRefusal(
+      `the registered command could not be executed by the host shell: ${reason} (command: ${command})`,
+    );
+  };
+  // No PATH (the interpreter must be absolute), no home (no config file), an invalid SDK budget
+  // (no network call): the hook has to deny from configuration alone. The shell and node still
+  // need the system roots, and PowerShell needs PATHEXT to run any native program at all.
+  const env: Record<string, string> = {
+    PATH: "",
+    HOME: "",
+    USERPROFILE: "",
+    ATBASH_CODEX_TIMEOUT_MS: "invalid",
+    ATBASH_HOOK_DEADLINE_MS: "",
+  };
+  for (const name of ["SystemRoot", "SYSTEMROOT", "SystemDrive", "TEMP", "TMP", "TMPDIR"]) {
+    const value = process.env[name];
+    if (value !== undefined) env[name] = value;
+  }
+  if (platform === "win32") env.PATHEXT = process.env.PATHEXT ?? ".COM;.EXE;.BAT;.CMD";
+  const [shell, args] =
+    platform === "win32"
+      ? [windowsPowerShellPath(process.env), ["-NoProfile", "-NonInteractive", "-Command", command]]
+      : ["/bin/sh", ["-c", command]];
+  const result = spawnSync(shell, args, {
+    input: JSON.stringify(PROBE_PAYLOAD),
+    encoding: "utf8",
+    env,
+    timeout: timeoutMs,
+    windowsHide: true,
+  });
+  if (result.error !== undefined) {
+    const code = (result.error as NodeJS.ErrnoException).code;
+    return fail(code === "ETIMEDOUT" ? `no decision within ${timeoutMs} ms` : result.error.message);
+  }
+  if (result.status !== 0) {
+    const detail = (result.stderr ?? "").trim().split(/\r?\n/)[0]?.slice(0, 200) ?? "";
+    return fail(
+      `exit ${result.status ?? `signal ${result.signal ?? "unknown"}`}${detail === "" ? "" : ` (${detail})`}`,
+    );
+  }
+  let decision: unknown;
+  try {
+    decision = JSON.parse((result.stdout ?? "").trim());
+  } catch {
+    return fail("stdout is not one JSON object");
+  }
+  const permission = isPlainObject(decision)
+    ? isPlainObject(decision.hookSpecificOutput)
+      ? decision.hookSpecificOutput.permissionDecision
+      : undefined
+    : undefined;
+  if (permission !== "deny") {
+    return fail(
+      `stdout is not a deny decision (permissionDecision: ${JSON.stringify(permission)})`,
+    );
+  }
 }
 
 /** Replace any existing Atbash entry with `entry` (appended as its own matcher group); foreign
@@ -412,11 +548,34 @@ export function directoryWritableByOthers(directory: string, platform: NodeJS.Pl
   }
 }
 
+/** dev + inode of a file: on POSIX a different file at the same path, on Windows a different
+ *  file index on the same volume. */
+export interface FileIdentity {
+  dev: number;
+  ino: number;
+}
+
+export function fileIdentity(path: string): FileIdentity | undefined {
+  try {
+    const info = statSync(path);
+    return { dev: info.dev, ino: info.ino };
+  } catch {
+    return undefined;
+  }
+}
+
+export function sameIdentity(a: FileIdentity | undefined, b: FileIdentity | undefined): boolean {
+  return a !== undefined && b !== undefined && a.dev === b.dev && a.ino === b.ino;
+}
+
 export interface AtomicWriteOptions {
   platform: NodeJS.Platform;
   /** The bytes read at the start (undefined: the file did not exist). The swap happens only if
    *  the target still holds exactly these. */
   expectedExisting: string | undefined;
+  /** The file's dev/inode when it was read, if it existed: the swap also requires the same file
+   *  object to still be there, so an identical-content replacement is noticed too. */
+  expectedIdentity?: FileIdentity | undefined;
   /** Runs between the temp-file write and the final check; exists so a test can reproduce a
    *  concurrent edit against the real file. Never set by the CLI. */
   beforeSwap?: () => void;
@@ -424,7 +583,9 @@ export interface AtomicWriteOptions {
 
 /** Temp file in the target's own directory, private mode, then rename over the target: a reader
  *  sees either the old file or the new one, never a partial write, and a file that changed since
- *  it was read is left as it is. */
+ *  it was read is left as it is. The check is content plus dev/inode, taken just before the rename;
+ *  the remaining window (a swap between that check and the rename) needs write access to the
+ *  Codex home, and whoever has that can rewrite hooks.json outright - the gate is already theirs. */
 export function writeHooksFileAtomically(
   target: string,
   text: string,
@@ -441,7 +602,10 @@ export function writeHooksFileAtomically(
     if (options.platform !== "win32") chmodSync(temporary, 0o600);
     options.beforeSwap?.();
     const current = existsSync(target) ? readFileSync(target, "utf8") : undefined;
-    if (current !== options.expectedExisting) {
+    const identityChanged =
+      options.expectedIdentity !== undefined &&
+      !sameIdentity(fileIdentity(target), options.expectedIdentity);
+    if (current !== options.expectedExisting || identityChanged) {
       throw new HooksFileRefusal(
         `${target} changed while the installer was running; re-run it to work from the current contents.`,
       );

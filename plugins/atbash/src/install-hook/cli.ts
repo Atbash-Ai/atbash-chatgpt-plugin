@@ -6,10 +6,12 @@ import {
   HooksFileRefusal,
   buildAtbashEntry,
   directoryWritableByOthers,
+  fileIdentity,
   foreignContent,
   hasAtbashEntry,
   mergeAtbashEntry,
   parseHooksFile,
+  probeRegisteredCommand,
   removeAtbashEntry,
   resolveHookScript,
   resolveInterpreter,
@@ -183,6 +185,7 @@ export function installHook(options: InstallHookOptions, context: InstallContext
   const hooksPath = resolveHooksPath(options.scope, options.dir, context);
   const target = resolveWriteTarget(hooksPath);
   const existingText = existsSync(target) ? readFileSync(target, "utf8") : undefined;
+  const existingIdentity = existingText === undefined ? undefined : fileIdentity(target);
   const existing: HooksDocument =
     existingText === undefined ? {} : parseHooksFile(existingText, hooksPath);
   const present = hasAtbashEntry(existing, identity);
@@ -191,9 +194,9 @@ export function installHook(options: InstallHookOptions, context: InstallContext
     foreignHooks: foreign.foreignHooks.length,
     otherEvents: foreign.otherEvents.length,
   };
-  const notes = foreign.foreignPreToolUseScripts.map(
+  const notes = foreign.lookalikes.map(
     () =>
-      `${hooksPath} has a PreToolUse hook that runs a pre-tool-use.cjs without the Atbash status message; it is not Atbash's and was left alone.`,
+      `${hooksPath} has a PreToolUse hook that looks like Atbash's (the Atbash status message, or a script called pre-tool-use.cjs) but does not run this plugin's hook script; it is not provably Atbash's and was left alone. If it is a stale entry from a plugin that moved, remove it by hand.`,
   );
   const warnings = directoryWritableByOthers(dirname(target), context.platform)
     ? [
@@ -213,7 +216,9 @@ export function installHook(options: InstallHookOptions, context: InstallContext
     action = "removed";
   } else {
     entry = buildAtbashEntry(hookScript, context.platform, interpreter);
-    verifyEntryRoundTrip(entry, hookScript, interpreter);
+    verifyEntryRoundTrip(entry, hookScript, interpreter, context.platform);
+    // The string parses back; now prove the host shell can run it and that it answers.
+    probeRegisteredCommand(entry, context.platform);
     next = mergeAtbashEntry(existing, entry, identity);
     action = present ? "updated" : "installed";
   }
@@ -229,6 +234,7 @@ export function installHook(options: InstallHookOptions, context: InstallContext
   writeHooksFileAtomically(target, text, {
     platform: context.platform,
     expectedExisting: existingText,
+    expectedIdentity: existingIdentity,
     ...(context.beforeSwap === undefined ? {} : { beforeSwap: context.beforeSwap }),
   });
   return { ...result, action, written: true };
@@ -299,6 +305,9 @@ export function describeResult(result: InstallResult, options: InstallHookOption
     lines.push(`  hook command: ${result.entry?.hooks[0]?.command ?? ""}`);
     lines.push(
       `  interpreter:  ${result.interpreter} (the node that ran this installer; the hook does not depend on PATH)`,
+    );
+    lines.push(
+      `  verified:     ${result.entry === undefined || !result.entry.hooks[0]?.command.startsWith("&") ? "sh" : "Windows PowerShell"} ran this exact command with no PATH and no configuration, and it answered with a deny`,
     );
     lines.push("");
     lines.push(REMAINING_STEPS.trimEnd());

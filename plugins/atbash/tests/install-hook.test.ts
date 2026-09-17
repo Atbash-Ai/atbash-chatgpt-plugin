@@ -38,6 +38,7 @@ import {
   type InstallContext,
   type InstallHookOptions,
 } from "../src/install-hook/cli.js";
+import { inspectRegistration } from "../src/install-hook/registration.js";
 import {
   HOOK_MATCHER,
   HOOK_STATUS_MESSAGE,
@@ -46,10 +47,14 @@ import {
   buildAtbashEntry,
   commandScriptPath,
   directoryWritableByOthers,
+  fileIdentity,
   isAtbashHook,
+  isAtbashLookalike,
   parseHookCommand,
+  probeRegisteredCommand,
   resolveInterpreter,
   resolveWriteTarget,
+  sameIdentity,
   validateHookScriptPath,
   verifyEntryRoundTrip,
   writeHooksFileAtomically,
@@ -65,7 +70,9 @@ const COMMAND_PATH = WIN32 ? REAL_HOOK_SCRIPT.replaceAll("\\", "/") : REAL_HOOK_
 // The interpreter the installer embeds: the node running these tests, resolved like the hook.
 const NODE_PATH = realpathSync(process.execPath);
 const NODE_COMMAND = WIN32 ? NODE_PATH.replaceAll("\\", "/") : NODE_PATH;
-const OWN_COMMAND = `"${NODE_COMMAND}" "${COMMAND_PATH}"`;
+// PowerShell's call operator on Windows (Codex runs hook commands through PowerShell there).
+const CALL = WIN32 ? "& " : "";
+const OWN_COMMAND = `${CALL}"${NODE_COMMAND}" "${COMMAND_PATH}"`;
 // Plain interpreter paths for the pure (platform-parameterised) cases.
 const POSIX_NODE = "/usr/local/bin/node";
 const WIN32_NODE = "C:\\Program Files\\nodejs\\node.exe";
@@ -120,10 +127,15 @@ function readDocument(path: string): DocumentShape {
   return JSON.parse(readFileSync(path, "utf8")) as DocumentShape;
 }
 
-function atbashGroups(document: DocumentShape): GroupShape[] {
+function atbashGroupsFor(document: DocumentShape, hookScript: string): GroupShape[] {
+  const identity: AtbashIdentity = { hookScript, platform: process.platform };
   return (document.hooks?.PreToolUse ?? []).filter((group) =>
-    (group.hooks ?? []).some((hook) => isAtbashHook(hook, IDENTITY)),
+    (group.hooks ?? []).some((hook) => isAtbashHook(hook, identity)),
   );
+}
+
+function atbashGroups(document: DocumentShape): GroupShape[] {
+  return atbashGroupsFor(document, REAL_HOOK_SCRIPT);
 }
 
 function assertAtbashHook(hook: HookShape | undefined): void {
@@ -135,7 +147,7 @@ function assertAtbashHook(hook: HookShape | undefined): void {
   if (WIN32) {
     assert.equal(
       hook.commandWindows,
-      `"${NODE_COMMAND.replaceAll("/", "\\")}" "${COMMAND_PATH.replaceAll("/", "\\")}"`,
+      `& "${NODE_COMMAND.replaceAll("/", "\\")}" "${COMMAND_PATH.replaceAll("/", "\\")}"`,
     );
   } else {
     assert.equal(hook.commandWindows, undefined, "commandWindows is a Windows-only key");
@@ -182,16 +194,20 @@ test("install-hook: the entry names the plugin's real absolute hook path, forwar
   assert.deepEqual(windows.hooks[0], {
     type: "command",
     command:
-      '"C:/Program Files/nodejs/node.exe" "C:/Users/dev/New folder (3)/runtime/pre-tool-use.cjs"',
+      '& "C:/Program Files/nodejs/node.exe" "C:/Users/dev/New folder (3)/runtime/pre-tool-use.cjs"',
     commandWindows:
-      '"C:\\Program Files\\nodejs\\node.exe" "C:\\Users\\dev\\New folder (3)\\runtime\\pre-tool-use.cjs"',
+      '& "C:\\Program Files\\nodejs\\node.exe" "C:\\Users\\dev\\New folder (3)\\runtime\\pre-tool-use.cjs"',
     timeout: HOOK_TIMEOUT_SECONDS,
     statusMessage: HOOK_STATUS_MESSAGE,
   });
 
   // The Atbash signal: the status message, or a command naming this very hook script (with or
   // without trailing arguments). A command that merely runs some pre-tool-use.cjs is not ours.
-  assert.equal(isAtbashHook(windows.hooks[0], IDENTITY), true, "status message");
+  assert.equal(
+    isAtbashHook(windows.hooks[0], IDENTITY),
+    false,
+    "the status message alone proves nothing: this entry names another script",
+  );
   assert.equal(
     isAtbashHook(
       {
@@ -200,8 +216,8 @@ test("install-hook: the entry names the plugin's real absolute hook path, forwar
       },
       IDENTITY,
     ),
-    true,
-    "hooks.json placeholder form, marked",
+    false,
+    "hooks.json placeholder form is not provably ours even when marked",
   );
   assert.equal(
     isAtbashHook({ command: 'node "$PLUGIN_ROOT/runtime/pre-tool-use.cjs"' }, IDENTITY),
@@ -238,10 +254,17 @@ test("install-hook: the entry names the plugin's real absolute hook path, forwar
 
   assert.equal(commandScriptPath('node "/a b/c.cjs" --x'), "/a b/c.cjs");
   assert.deepEqual(parseHookCommand('"/usr/bin/node" "/a b/c.cjs" --x'), {
+    callOperator: false,
     interpreter: "/usr/bin/node",
     script: "/a b/c.cjs",
   });
+  assert.deepEqual(parseHookCommand('& "C:/n/node.exe" "C:/a b/c.cjs"'), {
+    callOperator: true,
+    interpreter: "C:/n/node.exe",
+    script: "C:/a b/c.cjs",
+  });
   assert.deepEqual(parseHookCommand('node "/a/c.cjs"'), {
+    callOperator: false,
     interpreter: undefined,
     script: "/a/c.cjs",
   });
@@ -309,7 +332,7 @@ test("install-hook: a hook path containing shell metacharacters or a backslash o
   );
   assert.equal(
     buildAtbashEntry("C:\\x\\runtime\\pre-tool-use.cjs", "win32", WIN32_NODE).hooks[0]?.command,
-    '"C:/Program Files/nodejs/node.exe" "C:/x/runtime/pre-tool-use.cjs"',
+    '& "C:/Program Files/nodejs/node.exe" "C:/x/runtime/pre-tool-use.cjs"',
   );
 
   // Real plugin directories whose names a shell would interpret: the installer that lives there
@@ -389,10 +412,11 @@ test("install-hook: fresh install writes a documented-shape file whose command r
     // The round-trip check itself: a command that names another file, a missing file, or no
     // parseable path is refused before anything is written.
     const ok = buildAtbashEntry(REAL_HOOK_SCRIPT, process.platform, NODE_PATH);
-    verifyEntryRoundTrip(ok, REAL_HOOK_SCRIPT, NODE_PATH);
+    verifyEntryRoundTrip(ok, REAL_HOOK_SCRIPT, NODE_PATH, process.platform);
     const other = join(home, "other.cjs");
     writeFileSync(other, "");
-    const cmd = (script: string, interpreter = NODE_COMMAND) => `"${interpreter}" "${script}"`;
+    const cmd = (script: string, interpreter = NODE_COMMAND) =>
+      `${CALL}"${interpreter}" "${script}"`;
     const [own] = ok.hooks;
     assert.ok(own);
     const tamper = (command: string) => ({
@@ -400,7 +424,13 @@ test("install-hook: fresh install writes a documented-shape file whose command r
       hooks: [{ ...own, command, ...(WIN32 ? { commandWindows: command } : {}) }],
     });
     const verify = (command: string) =>
-      verifyEntryRoundTrip(tamper(command), REAL_HOOK_SCRIPT, NODE_PATH);
+      verifyEntryRoundTrip(tamper(command), REAL_HOOK_SCRIPT, NODE_PATH, process.platform);
+    // The call operator must be there on Windows and must not be there for sh.
+    const wrongOperator = WIN32 ? OWN_COMMAND.slice(2) : `& ${OWN_COMMAND}`;
+    assert.throws(
+      () => verify(wrongOperator),
+      WIN32 ? /lacks the PowerShell call operator/ : /carries a call operator/,
+    );
     assert.throws(() => verify(cmd(other)), /resolves to .*other\.cjs, not to/);
     assert.throws(() => verify(cmd(join(home, "missing.cjs"))), /names a file that does not exist/);
     assert.throws(() => verify(`node ${REAL_HOOK_SCRIPT}`), /does not parse back to a script path/);
@@ -422,22 +452,15 @@ test("install-hook: fresh install writes a documented-shape file whose command r
   }
 });
 
-test("install-hook: merges beside a foreign entry and other events, replacing a stale Atbash entry", () => {
+test("install-hook: merges beside a foreign entry and other events, replacing an existing own-path entry", () => {
   const home = tempHome();
   try {
     const hooksPath = join(home, ".codex", "hooks.json");
     mkdirSync(join(home, ".codex"), { recursive: true });
-    // The plugin moved: the old entry still carries the Atbash status message.
-    const stale = {
+    // An earlier, hand-edited registration of this very hook script (bare node, no status message).
+    const previous = {
       matcher: "*",
-      hooks: [
-        {
-          type: "command",
-          command: 'node "/old/place/runtime/pre-tool-use.cjs"',
-          timeout: 35,
-          statusMessage: HOOK_STATUS_MESSAGE,
-        },
-      ],
+      hooks: [{ type: "command", command: `node "${COMMAND_PATH}"`, timeout: 35 }],
     };
     writeFileSync(
       hooksPath,
@@ -446,7 +469,7 @@ test("install-hook: merges beside a foreign entry and other events, replacing a 
           description: "my hooks",
           hooks: {
             PostToolUse: [{ matcher: "Bash", hooks: [{ type: "command", command: "echo done" }] }],
-            PreToolUse: [stale, FOREIGN_GROUP],
+            PreToolUse: [previous, FOREIGN_GROUP],
           },
           extra: { keep: true },
         },
@@ -459,6 +482,7 @@ test("install-hook: merges beside a foreign entry and other events, replacing a 
     assert.equal(result.action, "updated");
     assert.equal(result.written, true);
     assert.deepEqual(result.kept, { foreignHooks: 1, otherEvents: 1 });
+    assert.deepEqual(result.notes, []);
 
     const document = readDocument(hooksPath);
     assert.equal(document.description, "my hooks");
@@ -467,10 +491,10 @@ test("install-hook: merges beside a foreign entry and other events, replacing a 
       { matcher: "Bash", hooks: [{ type: "command", command: "echo done" }] },
     ]);
     const groups = document.hooks?.PreToolUse ?? [];
-    assert.equal(groups.length, 2, "foreign entry kept, stale Atbash entry replaced not appended");
+    assert.equal(groups.length, 2, "foreign entry kept, previous own entry replaced not appended");
     assert.deepEqual(groups[0], FOREIGN_GROUP);
     assertAtbashHook(groups[1]?.hooks?.[0]);
-    assert.equal(JSON.stringify(document).includes("/old/place/"), false, "the stale path is gone");
+    assert.equal(atbashGroups(document).length, 1);
 
     // A hand-edited group that mixes the Atbash hook with a foreign hook: only the Atbash hook
     // leaves that group; the foreign hook stays where it was.
@@ -478,11 +502,7 @@ test("install-hook: merges beside a foreign entry and other events, replacing a 
       matcher: "*",
       hooks: [
         { type: "command", command: "node /opt/other/first.js" },
-        {
-          type: "command",
-          command: 'node "/old/place/runtime/pre-tool-use.cjs"',
-          statusMessage: HOOK_STATUS_MESSAGE,
-        },
+        { type: "command", command: `node "${COMMAND_PATH}"`, statusMessage: HOOK_STATUS_MESSAGE },
       ],
     };
     writeFileSync(hooksPath, JSON.stringify({ hooks: { PreToolUse: [mixed] } }));
@@ -494,6 +514,82 @@ test("install-hook: merges beside a foreign entry and other events, replacing a 
       hooks: [{ type: "command", command: "node /opt/other/first.js" }],
     });
     assertAtbashHook(afterMixed[1]?.hooks?.[0]);
+  } finally {
+    rmSync(home, { force: true, recursive: true });
+  }
+});
+
+test("install-hook: an entry carrying the Atbash status message but a foreign script is reported, not silently swallowed", () => {
+  const home = tempHome();
+  try {
+    const hooksPath = join(home, ".codex", "hooks.json");
+    mkdirSync(join(home, ".codex"), { recursive: true });
+    // A vendor that copied our status message, and a stale entry from a plugin that moved: the
+    // same shape to the installer, and neither is provably ours.
+    const lookalike = {
+      matcher: "*",
+      hooks: [
+        {
+          type: "command",
+          command: 'node "/opt/other-vendor/hooks/guard.js"',
+          timeout: 35,
+          statusMessage: HOOK_STATUS_MESSAGE,
+        },
+      ],
+    };
+    const stale = {
+      matcher: "*",
+      hooks: [
+        {
+          type: "command",
+          command: 'node "/old/place/runtime/pre-tool-use.cjs"',
+          statusMessage: HOOK_STATUS_MESSAGE,
+        },
+      ],
+    };
+    assert.equal(isAtbashHook(lookalike.hooks[0], IDENTITY), false);
+    assert.equal(isAtbashHook(stale.hooks[0], IDENTITY), false);
+    assert.equal(isAtbashLookalike(lookalike.hooks[0], IDENTITY), true);
+    assert.equal(isAtbashLookalike(stale.hooks[0], IDENTITY), true);
+    assert.equal(isAtbashLookalike(FOREIGN_GROUP.hooks?.[0], IDENTITY), false);
+    assert.equal(
+      isAtbashLookalike({ command: OWN_COMMAND }, IDENTITY),
+      false,
+      "ours is not a look-alike",
+    );
+    writeFileSync(hooksPath, JSON.stringify({ hooks: { PreToolUse: [lookalike, stale] } }));
+
+    const install = runCli([], context(home));
+    assert.equal(install.code, EXIT_OK, install.stderr);
+    assert.match(
+      install.stdout,
+      /Installed the Atbash hook/,
+      "not 'replaced': nothing here was ours",
+    );
+    assert.match(install.stdout, /2 foreign PreToolUse hooks and 0 other events kept/);
+    assert.equal(install.stderr.match(/^note: .*looks like Atbash's.*left alone/gm)?.length, 2);
+    assert.match(install.stderr, /stale entry from a plugin that moved, remove it by hand/);
+    let groups = readDocument(hooksPath).hooks?.PreToolUse ?? [];
+    assert.equal(groups.length, 3, "both look-alikes kept, ours appended");
+    assert.deepEqual(groups[0], lookalike);
+    assert.deepEqual(groups[1], stale);
+    assertAtbashHook(groups[2]?.hooks?.[0]);
+
+    const again = runCli([], context(home));
+    assert.match(again.stdout, /already installed/);
+    assert.equal((readDocument(hooksPath).hooks?.PreToolUse ?? []).length, 3, "idempotent");
+
+    const uninstall = runCli(["--uninstall"], context(home));
+    assert.equal(uninstall.code, EXIT_OK, uninstall.stderr);
+    assert.match(uninstall.stdout, /Removed the Atbash hook/);
+    groups = readDocument(hooksPath).hooks?.PreToolUse ?? [];
+    assert.deepEqual(groups, [lookalike, stale], "uninstall touched only the provable entry");
+
+    // With only look-alikes left there is nothing of ours to remove, and they still are not ours.
+    const nothing = runCli(["--uninstall"], context(home));
+    assert.equal(nothing.code, EXIT_OK);
+    assert.match(nothing.stdout, /No Atbash hook .*nothing to remove/);
+    assert.deepEqual(readDocument(hooksPath).hooks?.PreToolUse, [lookalike, stale]);
   } finally {
     rmSync(home, { force: true, recursive: true });
   }
@@ -518,10 +614,7 @@ test("install-hook: a foreign pre-tool-use.cjs hook is neither replaced nor remo
 
     const install = runCli([], context(home));
     assert.equal(install.code, EXIT_OK, install.stderr);
-    assert.match(
-      install.stderr,
-      /^note: .*pre-tool-use\.cjs without the Atbash status message.*left alone/m,
-    );
+    assert.match(install.stderr, /^note: .*looks like Atbash's.*left alone/m);
     let groups = readDocument(hooksPath).hooks?.PreToolUse ?? [];
     assert.equal(groups.length, 2);
     assert.deepEqual(groups[0], vendor, "the vendor's hook is untouched");
@@ -901,6 +994,195 @@ test("install-hook: usage errors exit 2 and a missing hook script is refused wit
   }
 });
 
+test("install-hook: the registered command string is executable by the host shell and answers with a decision", () => {
+  // The real runtime, run through the real platform shell exactly as the host would, with no
+  // PATH and no configuration: the only acceptable answer is a deny.
+  const entry = buildAtbashEntry(REAL_HOOK_SCRIPT, process.platform, NODE_PATH);
+  probeRegisteredCommand(entry, process.platform);
+
+  const home = tempHome();
+  try {
+    // An interpreter that exists, is absolute and passes the allowlist, but is not a program.
+    const fakeNode = join(home, "fake-node");
+    writeFileSync(fakeNode, "not a program\n");
+    const broken = buildAtbashEntry(REAL_HOOK_SCRIPT, process.platform, realpathSync(fakeNode));
+    verifyEntryRoundTrip(broken, REAL_HOOK_SCRIPT, realpathSync(fakeNode), process.platform);
+    assert.throws(
+      () => probeRegisteredCommand(broken, process.platform),
+      (error: unknown) =>
+        error instanceof HooksFileRefusal &&
+        /could not be executed by the host shell: (exit \d+|stdout is not one JSON object)/.test(
+          error.message,
+        ),
+    );
+    // A command that runs but answers with something other than a deny is refused too.
+    const silent = {
+      ...broken,
+      hooks: [{ ...broken.hooks[0]!, command: `${CALL}"${NODE_COMMAND}" -e 0` }],
+    };
+    if (WIN32) silent.hooks[0]!.commandWindows = `& "${NODE_PATH}" -e 0`;
+    assert.throws(
+      () => probeRegisteredCommand(silent, process.platform),
+      /could not be executed by the host shell: stdout is not one JSON object/,
+    );
+    const permit = {
+      ...broken,
+      hooks: [
+        {
+          ...broken.hooks[0]!,
+          command: `${CALL}"${NODE_COMMAND}" -e "console.log(JSON.stringify({hookSpecificOutput:{permissionDecision:'allow'}}))"`,
+        },
+      ],
+    };
+    if (WIN32)
+      permit.hooks[0]!.commandWindows = permit.hooks[0]!.command.replace(NODE_COMMAND, NODE_PATH);
+    assert.throws(
+      () => probeRegisteredCommand(permit, process.platform),
+      /stdout is not a deny decision \(permissionDecision: "allow"\)/,
+    );
+
+    // Through the CLI: a non-executable interpreter is refused and nothing is written.
+    const refused = runCli([], context(home, { nodePath: fakeNode }));
+    assert.equal(refused.code, EXIT_REFUSED);
+    assert.match(
+      refused.stderr,
+      /^Refused: the registered command could not be executed by the host shell/,
+    );
+    assert.equal(existsSync(join(home, ".codex")), false, "nothing written");
+    // Dry run is held to the same check.
+    const dry = runCli(["--dry-run"], context(home, { nodePath: fakeNode }));
+    assert.equal(dry.code, EXIT_REFUSED);
+    // And the real interpreter passes, with the verification named in the summary.
+    const ok = runCli([], context(home));
+    assert.equal(ok.code, EXIT_OK, ok.stderr);
+    assert.match(
+      ok.stdout,
+      WIN32
+        ? /verified: +Windows PowerShell ran this exact command.*answered with a deny/
+        : /verified: +sh ran this exact command.*answered with a deny/,
+    );
+  } finally {
+    rmSync(home, { force: true, recursive: true });
+  }
+});
+
+test("install-hook: a file replaced by another file with the same bytes is noticed before the rename", () => {
+  const home = tempHome();
+  try {
+    const a = join(home, "a.json");
+    const b = join(home, "b.json");
+    writeFileSync(a, "{}");
+    writeFileSync(b, "{}");
+    assert.equal(sameIdentity(fileIdentity(a), fileIdentity(a)), true);
+    assert.equal(sameIdentity(fileIdentity(a), fileIdentity(b)), false, "two files, same bytes");
+    assert.equal(sameIdentity(fileIdentity(a), undefined), false);
+    assert.equal(fileIdentity(join(home, "missing")), undefined);
+
+    const hooksPath = join(home, ".codex", "hooks.json");
+    assert.equal(installHook(options(), context(home)).action, "installed");
+    const bytes = readFileSync(hooksPath, "utf8");
+    if (WIN32) {
+      // NTFS may hand a recreated file the same file index, so the swap cannot be forced here;
+      // the identity check above is what runs, and a plain unchanged file still goes through.
+      const removed = installHook(options({ uninstall: true }), context(home));
+      assert.equal(removed.action, "removed");
+    } else {
+      // Same bytes, different inode, between the read and the rename: refused, file left alone.
+      assert.throws(
+        () =>
+          installHook(
+            options({ uninstall: true }),
+            context(home, {
+              beforeSwap: () => {
+                rmSync(hooksPath);
+                writeFileSync(hooksPath, bytes);
+              },
+            }),
+          ),
+        /changed while the installer was running/,
+      );
+      assert.equal(readFileSync(hooksPath, "utf8"), bytes);
+      assert.deepEqual(readdirSync(join(home, ".codex")), ["hooks.json"], "no temp file left");
+    }
+  } finally {
+    rmSync(home, { force: true, recursive: true });
+  }
+});
+
+test("install-hook: status reports a registration whose interpreter or script no longer exists", () => {
+  const home = tempHome();
+  try {
+    const hooksPath = join(home, "hooks.json");
+    // Nothing registered yet.
+    let report = inspectRegistration(hooksPath, IDENTITY);
+    assert.equal(report.registered, 0);
+    assert.deepEqual(report.warnings, []);
+    assert.match(report.notes[0] ?? "", /no user-level hooks file/);
+
+    // A healthy registration written by the installer.
+    assert.equal(installHook(options({ dir: home }), context(home)).action, "installed");
+    report = inspectRegistration(hooksPath, IDENTITY);
+    assert.equal(report.registered, 1);
+    assert.deepEqual(report.warnings, []);
+    assert.deepEqual(report.notes, []);
+
+    // The node it was pinned to is gone (an nvm uninstall): the file is edited to point at a
+    // path that does not exist, the way the world would leave it.
+    const document = readDocument(hooksPath);
+    const hook = document.hooks?.PreToolUse?.[0]?.hooks?.[0];
+    assert.ok(hook);
+    const goneNode = join(home, "gone", "node");
+    hook.command = `${CALL}"${goneNode.replaceAll("\\", "/")}" "${COMMAND_PATH}"`;
+    if (WIN32) hook.commandWindows = `& "${goneNode}" "${REAL_HOOK_SCRIPT}"`;
+    writeFileSync(hooksPath, JSON.stringify(document));
+    report = inspectRegistration(hooksPath, IDENTITY);
+    assert.equal(report.registered, 1, "still ours: the script is this plugin's");
+    assert.equal(report.warnings.length, 1);
+    assert.match(
+      report.warnings[0] ?? "",
+      /interpreter that no longer exists.*Re-run install-hook\.cjs/,
+    );
+
+    // A look-alike whose script is gone (the plugin moved): reported too, as not provably ours.
+    writeFileSync(
+      hooksPath,
+      JSON.stringify({
+        hooks: {
+          PreToolUse: [
+            {
+              matcher: "*",
+              hooks: [
+                {
+                  type: "command",
+                  command: `${CALL}"${NODE_COMMAND}" "${join(home, "old", "runtime", "pre-tool-use.cjs").replaceAll("\\", "/")}"`,
+                  statusMessage: HOOK_STATUS_MESSAGE,
+                },
+                { type: "command", command: 'node "$PLUGIN_ROOT/runtime/pre-tool-use.cjs"' },
+              ],
+            },
+          ],
+        },
+      }),
+    );
+    report = inspectRegistration(hooksPath, IDENTITY);
+    assert.equal(report.registered, 0);
+    assert.match(
+      report.warnings[0] ?? "",
+      /looks like Atbash's.*hook script that no longer exists/,
+    );
+    assert.match(report.warnings[1] ?? "", /looks like Atbash's.*bare "node"/);
+    assert.match(report.notes[0] ?? "", /no PreToolUse entry for this plugin's hook script/);
+
+    // An unreadable file is a warning, never a crash.
+    writeFileSync(hooksPath, "{nope");
+    report = inspectRegistration(hooksPath, IDENTITY);
+    assert.match(report.warnings[0] ?? "", /could not be read/);
+    assert.equal(report.warnings[0]?.includes("nope"), false, "no file content echoed");
+  } finally {
+    rmSync(home, { force: true, recursive: true });
+  }
+});
+
 test("install-hook: the built installer (dist and the committed runtime) registers its own sibling hook", () => {
   for (const entry of ["dist/install-hook.cjs", "runtime/install-hook.cjs"]) {
     const home = tempHome();
@@ -924,7 +1206,7 @@ test("install-hook: the built installer (dist and the committed runtime) registe
       assert.equal(install.status, EXIT_OK, install.stderr);
       assert.match(install.stdout, /Installed the Atbash hook/, install.stdout);
       assert.match(install.stdout, /run \/hooks and trust/, install.stdout);
-      const expectedCommand = `"${NODE_COMMAND}" "${registered}"`;
+      const expectedCommand = `${CALL}"${NODE_COMMAND}" "${registered}"`;
       assert.ok(install.stdout.includes(`hook command: ${expectedCommand}`), install.stdout);
       assert.ok(install.stdout.includes(`interpreter:  ${NODE_PATH}`), install.stdout);
       const hooksPath = join(home, "hooks.json");
@@ -941,20 +1223,54 @@ test("install-hook: the built installer (dist and the committed runtime) registe
         "CODEX_HOME was not consulted",
       );
 
+      // The identity is the sibling of the installer that ran: dist/ and runtime/ differ.
+      const ours = () => atbashGroupsFor(readDocument(hooksPath), sibling).length;
       const again = run(["--dir", home]);
       assert.equal(again.status, EXIT_OK, again.stderr);
       assert.match(again.stdout, /already installed/);
-      assert.equal(atbashGroups(readDocument(hooksPath)).length, 1);
+      assert.equal(ours(), 1);
+
+      // status.cjs next to the same installer reports the registration it finds in CODEX_HOME.
+      const statusEntry = join(resolve(entry, ".."), "status.cjs");
+      const status = spawnSync(process.execPath, [statusEntry], {
+        cwd: process.cwd(),
+        encoding: "utf8",
+        env: {
+          ...process.env,
+          CODEX_HOME: home,
+          HOME: home,
+          USERPROFILE: home,
+          ATBASH_CODEX_TIMEOUT_MS: "invalid",
+        },
+      });
+      assert.doesNotMatch(status.stderr, /^warning:/m, status.stderr);
+      assert.doesNotMatch(status.stderr, /^note:/m, status.stderr);
+      assert.match(status.stdout, /"state": "configuration_error"/);
 
       const dry = run(["--dry-run", "--uninstall", "--dir", home]);
       assert.equal(dry.status, EXIT_OK, dry.stderr);
       assert.match(dry.stdout, /Would remove/);
-      assert.equal(atbashGroups(readDocument(hooksPath)).length, 1, "dry run wrote nothing");
+      assert.equal(ours(), 1, "dry run wrote nothing");
 
       const uninstall = run(["--uninstall", "--dir", home]);
       assert.equal(uninstall.status, EXIT_OK, uninstall.stderr);
       assert.match(uninstall.stdout, /Removed the Atbash hook/);
-      assert.equal(atbashGroups(readDocument(hooksPath)).length, 0);
+      assert.equal(ours(), 0);
+      const unregistered = spawnSync(process.execPath, [statusEntry], {
+        cwd: process.cwd(),
+        encoding: "utf8",
+        env: {
+          ...process.env,
+          CODEX_HOME: home,
+          HOME: home,
+          USERPROFILE: home,
+          ATBASH_CODEX_TIMEOUT_MS: "invalid",
+        },
+      });
+      assert.match(
+        unregistered.stderr,
+        /^note: .*no PreToolUse entry for this plugin's hook script/m,
+      );
 
       const usage = run(["--nope"]);
       assert.equal(usage.status, EXIT_USAGE);
