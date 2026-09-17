@@ -56,10 +56,49 @@ Treat Atbash as active only when all of these are true:
 
 1. The `atbash` plugin is installed and enabled.
 2. Codex lifecycle hooks are enabled.
-3. The Atbash `PreToolUse` command is trusted in `/hooks`.
-4. Local Atbash credentials and organization configuration are valid.
+3. The Atbash `PreToolUse` command is registered where this Codex loads hooks (see the next section: on Codex 0.154 or newer that is the user's or project's own hooks file, never the plugin's).
+4. The Atbash `PreToolUse` command is trusted in `/hooks`.
+5. Local Atbash credentials and organization configuration are valid.
 
-To deactivate Atbash, tell the user to disable the plugin or untrust/disable its hook in Codex. Do not describe deactivation as bypassing an individual verdict; it disables enforcement for subsequent tool calls.
+To deactivate Atbash, tell the user to disable the plugin or untrust/disable its hook in Codex (and, for a user-level registration, run the installer with `--uninstall`). Do not describe deactivation as bypassing an individual verdict; it disables enforcement for subsequent tool calls.
+
+## Codex 0.154+: plugin hooks are not loaded
+
+Verified 2026-09-17 on Codex CLI 0.154.0: `codex features list` reports `plugin_hooks: removed`, the manifest validator rejects a `hooks` field in `.codex-plugin/plugin.json`, and with the plugin installed and enabled a shell command ran with no hook activity. On such a Codex the plugin's bundled `hooks/hooks.json` enforces nothing, including for the copy in OpenAI's curated marketplace. Never tell the user that installing the plugin alone activates enforcement there.
+
+Codex does run the same hook from a user-level (`~/.codex/hooks.json`, or `[hooks]` in `~/.codex/config.toml`) or project-level (`<project>/.codex/hooks.json`) registration. Tell the user to run the plugin's installer themselves, from a clone of the repository or from the directory Codex installed the plugin into:
+
+```bash
+node plugins/atbash/runtime/install-hook.cjs
+```
+
+Useful flags: `--dry-run` (print the resulting file, write nothing), `--scope project`, `--dir <codex home or project dir>`, `--uninstall` (remove only the Atbash entry). The installer registers the absolute path of the `runtime/pre-tool-use.cjs` next to it, keeps every other hook in the file, replaces an existing Atbash entry instead of duplicating it, refuses a file that is not valid JSON in the documented hook shape (exit 1, file untouched), and writes atomically with mode `0600` on macOS/Linux.
+
+Then two steps remain that only the user can do: restart Codex so it reads the hooks file, and trust the Atbash `PreToolUse` hook in `/hooks`. Codex does not run an untrusted hook; `--dangerously-bypass-hook-trust` is for CI only.
+
+Manual fallback (`~/.codex/hooks.json`, absolute path of the user's copy of the plugin):
+
+```json
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"/absolute/path/to/plugins/atbash/runtime/pre-tool-use.cjs\"",
+            "timeout": 35,
+            "statusMessage": "Checking action with Atbash"
+          }
+        ]
+      }
+    ]
+  }
+}
+```
+
+On Windows add `"commandWindows": "node \"C:\\path\\to\\plugins\\atbash\\runtime\\pre-tool-use.cjs\""` beside `command`.
 
 ## Verify and troubleshoot
 

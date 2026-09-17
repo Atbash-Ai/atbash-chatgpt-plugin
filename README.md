@@ -25,6 +25,49 @@ codex plugin marketplace add Atbash-Ai/atbash-chatgpt-plugin --ref main
 
 Then open the Plugins Directory in the desktop app, select the Atbash AI marketplace, and install Atbash Safety. If you already registered another marketplace named `atbash-ai`, choose the source that points to this repository. Configure credentials before enabling and trusting its hook. Review the Atbash hook through `/hooks` and start a new task after installation.
 
+On Codex 0.154 or newer, installing the plugin does **not** activate its hook: Codex no longer loads hooks shipped inside a plugin. Register the hook at the user level with the installer described in the next section, or nothing is enforced.
+
+## Codex 0.154+: plugin hooks are not loaded
+
+Verified 2026-09-17 on Codex CLI 0.154.0: `codex features list` reports `plugin_hooks: removed`, the plugin manifest validator rejects a `hooks` field in `.codex-plugin/plugin.json`, and with this plugin installed and enabled a shell command ran with no hook activity at all. On that Codex, `plugins/atbash/hooks/hooks.json` enforces nothing, and that includes the copy of this plugin in OpenAI's curated marketplace. The file still ships for hosts that load plugin hooks; do not treat the plugin listing itself as enforcement.
+
+Codex does run the very same hook when it is registered at the user level (`~/.codex/hooks.json`, or `[hooks]` in `~/.codex/config.toml`) or at the project level (`<project>/.codex/hooks.json`). The plugin ships an installer that writes that entry:
+
+```bash
+node plugins/atbash/runtime/install-hook.cjs
+```
+
+Run it from a clone of this repository, or from the directory Codex installed the plugin into; the command it registers is the absolute path of the `runtime/pre-tool-use.cjs` next to it (resolved through the real path, with forward slashes; on Windows a `commandWindows` variant with backslashes is added, matching `hooks/hooks.json`). Options: `--dry-run` prints the exact resulting file and writes nothing; `--scope project` writes `<project>/.codex/hooks.json` instead of the user file; `--dir <path>` names the Codex home (user scope; the default is `$CODEX_HOME`, then `~/.codex`) or the project directory; `--uninstall` removes only the Atbash entry. An existing file is touched only if it is valid JSON in the documented hook shape, and then other hooks, other events, and unknown keys are preserved verbatim; an existing Atbash entry (recognised by its `pre-tool-use.cjs` command) is replaced rather than duplicated; the file is replaced atomically (temp file and rename) with mode `0600` on macOS/Linux. Exit codes: `0` done or nothing to do, `1` refused or failed with the file left as it was, `2` usage.
+
+Two steps remain yours, and the installer prints them:
+
+1. Restart Codex so it reads the hooks file.
+2. In Codex, run `/hooks` and trust the Atbash `PreToolUse` hook. Codex does not run an untrusted hook; `--dangerously-bypass-hook-trust` exists for CI only and is not a substitute.
+
+Manual fallback, if you would rather write the file yourself (`~/.codex/hooks.json`; replace the path with the absolute path of your copy of the plugin):
+
+```json
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"/absolute/path/to/plugins/atbash/runtime/pre-tool-use.cjs\"",
+            "timeout": 35,
+            "statusMessage": "Checking action with Atbash"
+          }
+        ]
+      }
+    ]
+  }
+}
+```
+
+On Windows add `"commandWindows": "node \"C:\\path\\to\\plugins\\atbash\\runtime\\pre-tool-use.cjs\""` beside `command`. Then trust the hook in `/hooks` and restart Codex, exactly as above.
+
 ## Configure your agent locally
 
 Create `~/.config/atbash/config.json` on macOS/Linux or `%USERPROFILE%\.config\atbash\config.json` on Windows, using a local editor outside the conversation:
@@ -46,15 +89,15 @@ Try: “Run pwd, then list the files in this repository.” The setup skill can 
 
 `main` is the public release source. Initial plugin code and runtime are based on source commit `5cdeb7d66def9a94e387f129a9f0744cbf818515` (production SDK 0.7.1). This repository starts with fresh Git history and contains no agent configuration or previous debugging history.
 
-| Path                                       | Purpose                                                                       |
-| ------------------------------------------ | ----------------------------------------------------------------------------- |
-| `.agents/plugins/marketplace.json`         | Catalog used by Git-based installation                                        |
-| `plugins/atbash/.codex-plugin/plugin.json` | Plugin identity and presentation                                              |
-| `plugins/atbash/hooks/hooks.json`          | Catch-all `PreToolUse` registration                                           |
-| `plugins/atbash/src/`                      | SDK adapter and hook protocol implementation                                  |
-| `plugins/atbash/runtime/`                  | Committed JavaScript bundles, native SDK bindings, checksums, and SDK license |
-| `plugins/atbash/skills/atbash-setup/`      | Local setup and troubleshooting instructions                                  |
-| `submission/`                              | Listing and reviewer preparation                                              |
+| Path                                       | Purpose                                                                                                          |
+| ------------------------------------------ | ---------------------------------------------------------------------------------------------------------------- |
+| `.agents/plugins/marketplace.json`         | Catalog used by Git-based installation                                                                           |
+| `plugins/atbash/.codex-plugin/plugin.json` | Plugin identity and presentation                                                                                 |
+| `plugins/atbash/hooks/hooks.json`          | Catch-all `PreToolUse` registration (not loaded by Codex 0.154+; see above)                                      |
+| `plugins/atbash/src/`                      | SDK adapter, hook protocol, and user-level hook installer implementation                                         |
+| `plugins/atbash/runtime/`                  | Committed JavaScript bundles (hook, status, `install-hook.cjs`), native SDK bindings, checksums, and SDK license |
+| `plugins/atbash/skills/atbash-setup/`      | Local setup and troubleshooting instructions                                                                     |
+| `submission/`                              | Listing and reviewer preparation                                                                                 |
 
 ## Develop and package
 
