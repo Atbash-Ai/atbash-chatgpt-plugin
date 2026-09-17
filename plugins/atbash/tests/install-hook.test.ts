@@ -1159,6 +1159,7 @@ test("install-hook: status reports no registration as not enforcing, in the summ
       inspectRegistration(join(home, "project", ".codex", "hooks.json"), IDENTITY),
     ]);
     assert.equal(some.registered, 1);
+    assert.equal(some.spawnable, 1);
     assert.equal(some.enforcing, true);
     assert.deepEqual(some.warnings, []);
   } finally {
@@ -1224,6 +1225,11 @@ test("install-hook: status reports a registration whose interpreter or script no
       report.warnings[0] ?? "",
       /interpreter that no longer exists.*Re-run install-hook\.cjs/,
     );
+    // Registered, but the host cannot spawn it: the summary must not call that enforcing - the
+    // whole point of the signal is that a wrapper cannot mistake a dead pin for a live gate.
+    assert.equal(report.spawnable, 0);
+    assert.equal(summarizeRegistrations([report]).enforcing, false);
+    assert.equal(summarizeRegistrations([report]).registered, 1);
 
     // A look-alike whose script is gone (the plugin moved): reported too, as not provably ours.
     writeFileSync(

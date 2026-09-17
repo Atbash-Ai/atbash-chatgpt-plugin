@@ -169,6 +169,41 @@ test("the shipped entry point is a small un-bundled shim in front of the bundled
   );
 });
 
+/** The shim with its stdout connected to a real OS pipe whose other end is a separate process that
+ *  never reads: the only faithful model of a host that does not drain. (A node parent with a paused
+ *  stdout socket is not one - libuv keeps reading the pipe into its own buffer, ~64 KiB more.) */
+function runAgainstNonReadingHost(
+  entry: string,
+  env: NodeJS.ProcessEnv,
+  cwd: string,
+  guardMs: number,
+): Promise<RunResult & { killed: boolean }> {
+  return new Promise((resolve) => {
+    const consumer = spawn(process.execPath, ["-e", "setTimeout(() => {}, 120000)"], {
+      stdio: ["pipe", "ignore", "ignore"],
+    });
+    const started = Date.now();
+    const child = spawn(process.execPath, [entry], {
+      cwd,
+      env: { PATH: process.env.PATH, ...env },
+      stdio: ["pipe", consumer.stdin, "pipe"],
+    });
+    let stderr = "";
+    let killed = false;
+    child.stderr.on("data", (d) => (stderr += d));
+    child.stdin.end(JSON.stringify(makeHookInput()));
+    const guard = setTimeout(() => {
+      killed = true;
+      child.kill();
+    }, guardMs);
+    child.on("close", (code) => {
+      clearTimeout(guard);
+      consumer.kill();
+      resolve({ code, stdout: "", stderr, wallMs: Date.now() - started, killed });
+    });
+  });
+}
+
 function withDamagedRuntime(damage: (dir: string) => void): string {
   const dir = mkdtempSync(join(tmpdir(), "atbash-hook-damaged-"));
   cpSync("dist", dir, { recursive: true });
@@ -395,14 +430,13 @@ test("a runtime that logs to stdout and then hangs is still denied at the deadli
 });
 
 test("a decision the bundle wrote is delivered in full when the host reads late", async () => {
-  // A 70,000-character decision is larger than a POSIX pipe buffer (64 KiB) and under the shim's
-  // reason cap; on POSIX process.stdout is asynchronous for pipes, so a bundle that lingers past
-  // the deadline must not be ended before those bytes have drained. The parent does not read
-  // stdout until after the deadline has fired.
+  // A 2,000-character decision (under the byte bound) queued by a bundle that lingers past the
+  // deadline: the deadline must not end the process before those bytes are out, and the host,
+  // reading only after the deadline has fired, still gets every byte.
   const dir = withDamagedRuntime((d) => {
     writeFileSync(
       join(d, "pre-tool-use-main.cjs"),
-      `const reason = "x".repeat(70000);\n${ANSWER}(JSON.stringify({ hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: reason } }));\nsetInterval(() => {}, 1000);\n`,
+      `const reason = "x".repeat(2000);\n${ANSWER}(JSON.stringify({ hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: reason } }));\nsetInterval(() => {}, 1000);\n`,
     );
   });
   try {
@@ -426,7 +460,7 @@ test("a decision the bundle wrote is delivered in full when the host reads late"
     const decision = JSON.parse(result.stdout) as {
       hookSpecificOutput: { permissionDecisionReason: string };
     };
-    assert.equal(decision.hookSpecificOutput.permissionDecisionReason.length, 70_000);
+    assert.equal(decision.hookSpecificOutput.permissionDecisionReason.length, 2_000);
     assert.equal(result.stdout.match(/"permissionDecision":/g)?.length, 1);
     assert.ok(result.wallMs < 10_000, `the process lingered ${result.wallMs} ms`);
   } finally {
@@ -779,11 +813,12 @@ test("a bundle that returns without answering is denied at exit, never a permit"
 
 test("a second load of the shim never appends a second decision", async () => {
   // Two paths to the same shim file are two require-cache entries. The second load finds the
-  // channel taken and ends the process with a blocking exit; the first load's exit backstop then
-  // writes the one deny and the exit code is 0. No second deadline, no second bundle load, and
-  // never two decisions on stdout - before the fix the second listener appended "ended without a
-  // decision" after the real deny, two JSON objects the host cannot parse: a permit. A second load
-  // is not exempted because nothing can tell the shim's own copy from a decoy that copied it.
+  // channel taken, writes the one deny on stdout and ends the process with exit 0; the first
+  // load's exit backstop sees the process-wide marker and adds nothing. No second deadline, no
+  // second bundle load, and never two decisions on stdout - before the fix the second listener
+  // appended "ended without a decision" after the real deny, two JSON objects the host cannot
+  // parse: a permit. A second load is not exempted because nothing can tell the shim's own copy
+  // from a decoy that copied it.
   const dir = withDamagedRuntime((d) => {
     copyFileSync(join(d, "pre-tool-use.cjs"), join(d, "pre-tool-use-copy.cjs"));
     writeFileSync(
@@ -804,8 +839,12 @@ test("a second load of the shim never appends a second decision", async () => {
       `stdout: ${JSON.stringify(result.stdout)}`,
     );
     assert.doesNotThrow(() => JSON.parse(result.stdout), "stdout must be one parseable decision");
-    assert.match(result.stdout, /ended without a decision/);
-    assert.match(result.stderr, /channel was already taken/);
+    assert.match(result.stdout, /channel was already taken/);
+    assert.doesNotMatch(
+      result.stdout,
+      /ended without a decision/,
+      "the owner's backstop stays silent",
+    );
     assert.ok(result.wallMs < 5_000, `lingered ${result.wallMs} ms`);
   } finally {
     rmSync(dir, { force: true, recursive: true });
@@ -833,11 +872,14 @@ test("a foreign function already on the answer channel is a deny, never a silent
       },
       dir,
     );
-    // A blocking exit, not a deny on stdout: a deny here could be joined by the exit backstop's
-    // own deny when the owner is a second load of the shim (two decisions = unparseable).
-    assert.equal(result.code, 2, `exit ${result.code}, stdout ${JSON.stringify(result.stdout)}`);
-    assert.equal(result.stdout, "", "nothing may reach stdout past a refused channel");
-    assert.match(result.stderr, /channel was already taken/, result.stderr);
+    // A deny on stdout with exit 0: the only answer both hosts block on (Codex 0.154.0 lets a
+    // hook that exits 2 through). The process-wide marker keeps a genuine second load's owner
+    // from adding a second decision.
+    assert.equal(result.code, 0, `exit ${result.code}, stderr ${JSON.stringify(result.stderr)}`);
+    assert.match(result.stdout, DENY_SHAPE, `no deny on stdout: ${JSON.stringify(result.stdout)}`);
+    assert.match(result.stdout, /channel was already taken/);
+    assert.equal(result.stdout.match(/"permissionDecision":/g)?.length, 1);
+    assert.doesNotThrow(() => JSON.parse(result.stdout));
     assert.ok(result.wallMs < 5_000, `not refused at once: ${result.wallMs} ms`);
   } finally {
     rmSync(dir, { force: true, recursive: true });
@@ -848,7 +890,7 @@ test("a forged brand on the answer channel is a deny, never a silent permit", as
   // There is no brand a decoy could copy: any value already on the channel is refused, a
   // function carrying the former `atbashShim` marker included (plainly assigned, defined
   // non-writable as the shim once did, or through a polluted Function.prototype). Before the fix
-  // each of these was a silent permit (exit 0, empty stdout); now each is a blocking exit.
+  // each of these was a silent permit (exit 0, empty stdout); now each is a deny on stdout.
   const decoys = [
     `const f = function () {}; f.atbashShim = true; ${ANSWER} = f;\n`,
     `const f = function answer() {}; Object.defineProperty(f, "atbashShim", { value: true }); Object.defineProperty(globalThis, Symbol.for("atbash.hook.answer"), { value: f, writable: false, configurable: false, enumerable: false });\n`,
@@ -873,11 +915,12 @@ test("a forged brand on the answer channel is a deny, never a silent permit", as
       );
       assert.equal(
         result.code,
-        2,
-        `decoy ${decoy}: exit ${result.code}, stdout ${JSON.stringify(result.stdout)}`,
+        0,
+        `decoy ${decoy}: exit ${result.code}, stderr ${JSON.stringify(result.stderr)}`,
       );
-      assert.equal(result.stdout, "", `decoy ${decoy}: stdout must stay empty`);
-      assert.match(result.stderr, /channel was already taken/, result.stderr);
+      assert.match(result.stdout, DENY_SHAPE, `decoy ${decoy}: ${JSON.stringify(result.stdout)}`);
+      assert.match(result.stdout, /channel was already taken/);
+      assert.equal(result.stdout.match(/"permissionDecision":/g)?.length, 1, `decoy ${decoy}`);
     } finally {
       rmSync(dir, { force: true, recursive: true });
     }
@@ -945,8 +988,8 @@ test("an oversized reason is capped and still delivered as one parseable deny", 
     };
     assert.equal(decision.hookSpecificOutput.permissionDecision, "deny");
     assert.ok(
-      decision.hookSpecificOutput.permissionDecisionReason.length < 82_000,
-      `reason not capped: ${decision.hookSpecificOutput.permissionDecisionReason.length} chars`,
+      Buffer.byteLength(result.stdout, "utf8") <= 3_584,
+      `reason not capped: ${Buffer.byteLength(result.stdout, "utf8")} bytes`,
     );
     assert.match(decision.hookSpecificOutput.permissionDecisionReason, /truncated by the hook/);
     assert.equal(result.stdout.match(/"permissionDecision":/g)?.length, 1);
@@ -956,100 +999,171 @@ test("an oversized reason is capped and still delivered as one parseable deny", 
 });
 
 test("an oversized reason never hangs the hook when the host does not read", async () => {
-  // process.stdout is synchronous on Windows pipes: a deny larger than the pipe can hold, written
-  // to a host that never reads, blocked the shim forever (measured: 160,000 characters), and only
-  // the host's timeout ended it - a permit. The cap keeps every deny under that size; on POSIX the
-  // write queues and the drain watchdog ends the process with a blocking exit instead.
+  // A deny larger than the pipe's buffer, written to a host that never reads, blocked the shim
+  // for good on Windows - through process.stdout the event loop, through fs.write the pool thread
+  // that process.exit then joins - and only the host's timeout ended it: a permit. The deny is
+  // now bounded under the smallest pipe a host hands a hook, so the write completes into the pipe
+  // whether or not anyone reads and the hook ends 0 at once, for plain, quote-heavy, multi-byte
+  // and newline reasons alike. Driven through a real OS pipe whose consumer never reads: a node
+  // parent with a paused socket is not one (libuv keeps reading ~64 KiB into its own buffer).
+  for (const unit of ['"w"', "'\"'", '"\\u20ac"', '"\\n"']) {
+    const dir = withDamagedRuntime((d) => {
+      writeFileSync(
+        join(d, "pre-tool-use-main.cjs"),
+        `const reason = ${unit}.repeat(200000);\n${ANSWER}(JSON.stringify({ hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: reason } }));\nsetInterval(() => {}, 1000);\n`,
+      );
+    });
+    try {
+      const result = await runAgainstNonReadingHost(
+        join(dir, "pre-tool-use.cjs"),
+        { ATBASH_HOOK_DEADLINE_MS: "6000" },
+        dir,
+        12_000,
+      );
+      assert.equal(
+        result.killed,
+        false,
+        `reason unit ${unit}: the hook hung for ${result.wallMs} ms with a non-reading host`,
+      );
+      assert.equal(
+        result.code,
+        0,
+        `reason unit ${unit}: exit ${result.code}, stderr ${JSON.stringify(result.stderr)}`,
+      );
+      assert.ok(
+        result.wallMs < 4_000,
+        `reason unit ${unit}: did not end at once: ${result.wallMs} ms`,
+      );
+    } finally {
+      rmSync(dir, { force: true, recursive: true });
+    }
+  }
+});
+
+test("an oversized reason is cut to the byte bound, escaping and multi-byte characters included", async () => {
+  // The bound is on what leaves the process, not on what the bundle handed over: 200,000 quotes
+  // serialize to 400,000 bytes, 200,000 euro signs to 600,000; each must come back as one deny
+  // under the byte bound (3,584 bytes: under a 4 KiB pipe, over four times the judge's own
+  // 800-character reason), still parseable, still marked as truncated.
+  for (const unit of ["'\"'", '"\\u20ac"', '"\\n"']) {
+    const dir = withDamagedRuntime((d) => {
+      writeFileSync(
+        join(d, "pre-tool-use-main.cjs"),
+        `const reason = ${unit}.repeat(200000);\n${ANSWER}(JSON.stringify({ hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: reason } }));\n`,
+      );
+    });
+    try {
+      const result = await runHook(
+        join(dir, "pre-tool-use.cjs"),
+        { ATBASH_HOOK_DEADLINE_MS: "6000" },
+        dir,
+      );
+      assert.equal(result.code, 0, `reason unit ${unit}: ${result.stderr}`);
+      const bytes = Buffer.byteLength(result.stdout, "utf8");
+      assert.ok(bytes <= 3_584, `reason unit ${unit}: ${bytes} bytes left the process`);
+      assert.ok(
+        bytes > 2_048,
+        `reason unit ${unit}: only ${bytes} bytes - cut far below the bound`,
+      );
+      const decision = JSON.parse(result.stdout) as {
+        hookSpecificOutput: { permissionDecision: string; permissionDecisionReason: string };
+      };
+      assert.equal(decision.hookSpecificOutput.permissionDecision, "deny");
+      assert.match(decision.hookSpecificOutput.permissionDecisionReason, /truncated by the hook/);
+      assert.equal(result.stdout.match(/"permissionDecision":/g)?.length, 1);
+    } finally {
+      rmSync(dir, { force: true, recursive: true });
+    }
+  }
+});
+
+test("a refused channel is blocking even when process.exit was patched away", async () => {
+  // A decoy that takes the channel AND no-ops process.exit: the refusal's exit does not end the
+  // process, this load's backstop is silent (refused), and before the fix the loop drained to
+  // exit 0 with an empty stdout - a permit. The deny is now on stdout before the exit is tried,
+  // and nothing after the refusal (no stdout guard, no bundle) may run.
+  const dir = withDamagedRuntime((d) => {
+    writeFileSync(
+      join(d, "decoy.cjs"),
+      `${ANSWER} = function () {}; process.exit = function () {}; process.reallyExit = function () {};\n`,
+    );
+    writeFileSync(join(d, "pre-tool-use-main.cjs"), `setInterval(() => {}, 1000);\n`);
+  });
+  try {
+    const result = await runHook(
+      join(dir, "pre-tool-use.cjs"),
+      {
+        ATBASH_HOOK_DEADLINE_MS: "6000",
+        NODE_OPTIONS: `--require "${join(dir, "decoy.cjs").split("\\").join("/")}"`,
+      },
+      dir,
+    );
+    assert.equal(result.code, 0, `exit ${result.code}, stderr ${JSON.stringify(result.stderr)}`);
+    assert.match(result.stdout, DENY_SHAPE, `no deny on stdout: ${JSON.stringify(result.stdout)}`);
+    assert.match(result.stdout, /channel was already taken/);
+    assert.equal(result.stdout.match(/"permissionDecision":/g)?.length, 1);
+    assert.ok(result.wallMs < 5_000, `the bundle must not have been loaded: ${result.wallMs} ms`);
+  } finally {
+    rmSync(dir, { force: true, recursive: true });
+  }
+});
+
+test("a small deny to a host that never reads is delivered into the pipe and the hook ends 0", async () => {
+  // The other half of the non-reading-host case: a deny that fits the pipe's buffer is written in
+  // full whether or not anyone reads it yet, the write callback runs, and the hook ends 0 at once -
+  // the watchdog is for the deny that does not fit, never for the ordinary one.
   const dir = withDamagedRuntime((d) => {
     writeFileSync(
       join(d, "pre-tool-use-main.cjs"),
-      `const reason = "w".repeat(200000);\n${ANSWER}(JSON.stringify({ hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: reason } }));\nsetInterval(() => {}, 1000);\n`,
+      `${ANSWER}(JSON.stringify({ hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: "fits the pipe" } }));\nsetInterval(() => {}, 1000);\n`,
     );
   });
   try {
-    const result = await new Promise<RunResult & { killed: boolean }>((resolve) => {
-      const started = Date.now();
-      const child = spawn(process.execPath, [join(dir, "pre-tool-use.cjs")], {
-        cwd: dir,
-        env: { PATH: process.env.PATH, ATBASH_HOOK_DEADLINE_MS: "1000" },
-        stdio: ["pipe", "pipe", "pipe"],
-      });
-      let stderr = "";
-      let killed = false;
-      child.stdout.pause();
-      child.stderr.on("data", (d) => (stderr += d));
-      child.stdin.end(JSON.stringify(makeHookInput()));
-      const guard = setTimeout(() => {
-        killed = true;
-        child.kill();
-      }, 12_000);
-      child.on("close", (code) => {
-        clearTimeout(guard);
-        resolve({ code, stdout: "", stderr, wallMs: Date.now() - started, killed });
-      });
-    });
-    assert.equal(
-      result.killed,
-      false,
-      `the hook hung for ${result.wallMs} ms with a non-reading host`,
+    const result = await runAgainstNonReadingHost(
+      join(dir, "pre-tool-use.cjs"),
+      { ATBASH_HOOK_DEADLINE_MS: "6000" },
+      dir,
+      12_000,
     );
-    assert.ok(
-      result.code === 0 || result.code === 2,
-      `exit ${result.code}, stderr ${JSON.stringify(result.stderr)}`,
-    );
-    if (result.code === 2) assert.match(result.stderr, /did not read the decision/);
+    assert.equal(result.killed, false, `hung for ${result.wallMs} ms`);
+    assert.equal(result.code, 0, `exit ${result.code}, stderr ${JSON.stringify(result.stderr)}`);
+    assert.ok(result.wallMs < 2_500, `did not end at once: ${result.wallMs} ms`);
   } finally {
     rmSync(dir, { force: true, recursive: true });
   }
 });
 
 test("a decision cut short by an in-process exit is never a permit", async () => {
-  // A 70,000-character deny (over a POSIX pipe buffer, under the reason cap) is queued, then
-  // in-process code calls process.exit(0) before the host has read it.
-  // Where the pipe is asynchronous (POSIX) the bytes are still in the pipe: the exit listener sees a
-  // decision that never drained and ends with exit 2. Where stdio pipes are synchronous (Windows)
-  // the write completes before the exit runs and the full deny is delivered with exit 0. Never the
-  // third shape: exit 0 with a truncated, unparseable stdout.
+  // The bundle answers a deny and, in the same synchronous turn, calls process.exit(0): the write
+  // callback cannot have run yet, so the decision was never confirmed as drained. The exit backstop
+  // must end the process with a blocking exit code, never a permit-shaped 0 - whatever the pipe
+  // did with the bytes (Windows completes the write synchronously; a POSIX pipe may still hold
+  // them). Pipe size does not matter here, which is what makes the case reproducible on every
+  // host; before the `delivered` tracking the process ended 0.
   const dir = withDamagedRuntime((d) => {
     writeFileSync(
       join(d, "pre-tool-use-main.cjs"),
-      `const reason = "y".repeat(70000);\n${ANSWER}(JSON.stringify({ hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: reason } }));\nsetImmediate(() => process.exit(0));\n`,
+      `${ANSWER}(JSON.stringify({ hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: "cut short in the same turn" } }));
+process.exit(0);
+`,
     );
   });
   try {
-    const result = await new Promise<RunResult>((resolve) => {
-      const started = Date.now();
-      const child = spawn(process.execPath, [join(dir, "pre-tool-use.cjs")], {
-        cwd: dir,
-        env: { PATH: process.env.PATH, ATBASH_HOOK_DEADLINE_MS: "6000" },
-        stdio: ["pipe", "pipe", "pipe"],
-      });
-      let stdout = "";
-      let stderr = "";
-      child.stdout.pause();
-      child.stdout.on("data", (d) => (stdout += d));
-      child.stderr.on("data", (d) => (stderr += d));
-      child.stdin.end(JSON.stringify(makeHookInput()));
-      setTimeout(() => child.stdout.resume(), 1_500);
-      child.on("close", (code) => resolve({ code, stdout, stderr, wallMs: Date.now() - started }));
-    });
-    const complete = (() => {
-      try {
-        return (
-          (
-            JSON.parse(result.stdout) as {
-              hookSpecificOutput: { permissionDecisionReason: string };
-            }
-          ).hookSpecificOutput.permissionDecisionReason.length === 70_000
-        );
-      } catch {
-        return false;
-      }
-    })();
-    assert.ok(
-      (result.code === 0 && complete) || result.code === 2,
-      `exit ${result.code}, stdout length ${result.stdout.length}, stderr ${JSON.stringify(result.stderr)}`,
+    const result = await runHook(
+      join(dir, "pre-tool-use.cjs"),
+      { ATBASH_HOOK_DEADLINE_MS: "6000" },
+      dir,
     );
+    assert.equal(
+      result.code,
+      2,
+      `exit ${result.code}, stdout ${JSON.stringify(result.stdout)}, stderr ${JSON.stringify(result.stderr)}`,
+    );
+    // Whatever reached the host is at most one decision, never a second or a truncated one.
+    if (result.stdout !== "") {
+      assert.doesNotThrow(() => JSON.parse(result.stdout));
+      assert.equal(result.stdout.match(/"permissionDecision":/g)?.length, 1);
+    }
   } finally {
     rmSync(dir, { force: true, recursive: true });
   }

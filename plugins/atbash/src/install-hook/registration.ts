@@ -21,6 +21,9 @@ export interface RegistrationReport {
   hooksPath: string;
   /** Own entries found (commands naming this plugin's hook script). */
   registered: number;
+  /** Own entries the host can actually spawn: an absolute interpreter that exists and a script
+   *  that exists. An own entry whose pinned node is gone is registered but enforces nothing. */
+  spawnable: number;
   /** Warnings: a missing interpreter or script on an own or look-alike entry, or an unreadable file. */
   warnings: string[];
   /** Notes: no user-level entry for this plugin's runtime. */
@@ -31,7 +34,13 @@ export function inspectRegistration(
   hooksPath: string,
   identity: AtbashIdentity,
 ): RegistrationReport {
-  const report: RegistrationReport = { hooksPath, registered: 0, warnings: [], notes: [] };
+  const report: RegistrationReport = {
+    hooksPath,
+    registered: 0,
+    spawnable: 0,
+    warnings: [],
+    notes: [],
+  };
   if (!existsSync(hooksPath)) {
     report.notes.push(
       `no hooks file at ${hooksPath}; on Codex 0.154+ nothing enforces Atbash until install-hook.cjs has been run.`,
@@ -59,23 +68,32 @@ export function inspectRegistration(
           : command.command;
       const parsed = parseHookCommand(spelled);
       if (parsed === undefined) {
-        report.warnings.push(`${label} has a command this plugin cannot parse: ${String(spelled)}`);
+        // The command text comes from a file the user (or, at project scope, a checked-out
+        // repository) controls: it is reported, but bounded.
+        report.warnings.push(
+          `${label} has a command this plugin cannot parse: ${String(spelled).slice(0, 200)}`,
+        );
         continue;
       }
+      let spawnable = own;
       if (parsed.interpreter === undefined || !isAbsolute(parsed.interpreter)) {
+        spawnable = false;
         report.warnings.push(
           `${label} runs a bare "node" resolved from PATH at hook time; re-run install-hook.cjs to pin the interpreter.`,
         );
       } else if (!existsSync(parsed.interpreter)) {
+        spawnable = false;
         report.warnings.push(
           `${label} names an interpreter that no longer exists (${parsed.interpreter}); the host cannot spawn it. Re-run install-hook.cjs with the node you use now.`,
         );
       }
       if (!existsSync(parsed.script)) {
+        spawnable = false;
         report.warnings.push(
           `${label} names a hook script that no longer exists (${parsed.script}); re-run install-hook.cjs from the plugin's current location.`,
         );
       }
+      if (spawnable) report.spawnable += 1;
     }
   }
   if (report.registered === 0) {
@@ -89,8 +107,11 @@ export function inspectRegistration(
 export interface RegistrationSummary {
   /** Atbash entries found across every inspected hooks file. */
   registered: number;
-  /** True only when at least one Atbash entry exists: with none, nothing enforces Atbash on
-   *  Codex 0.154+, whatever the agent status says. */
+  /** Of those, the entries whose interpreter and script exist, so the host can spawn them. */
+  spawnable: number;
+  /** True only when at least one Atbash entry exists AND the host can spawn it: with none,
+   *  nothing enforces Atbash on Codex 0.154+, whatever the agent status says - and a registered
+   *  entry whose pinned node is gone is exactly a hook the host cannot run. */
   enforcing: boolean;
   warnings: string[];
   notes: string[];
@@ -102,9 +123,11 @@ export function summarizeRegistrations(
   reports: readonly RegistrationReport[],
 ): RegistrationSummary {
   const registered = reports.reduce((sum, report) => sum + report.registered, 0);
+  const spawnable = reports.reduce((sum, report) => sum + report.spawnable, 0);
   return {
     registered,
-    enforcing: registered > 0,
+    spawnable,
+    enforcing: spawnable > 0,
     warnings: reports.flatMap((report) => report.warnings),
     // A scope with no entry is worth a note only when no scope has one: an absent project file
     // next to a healthy user-level registration is the normal state, not a finding.

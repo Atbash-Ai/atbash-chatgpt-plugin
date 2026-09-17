@@ -114,12 +114,12 @@ npm run status --workspace @atbash/codex-plugin
 
 Interpret status results as follows:
 
-- `ready`: configuration, registration, and service access are working.
+- `ready`: configuration, registration, and service access are working for the agent. The process exits 0 only when, in addition, `hookRegistration.enforcing` is `true` in the JSON - an Atbash `PreToolUse` entry exists in the user-level (`$CODEX_HOME`/`~/.codex/hooks.json`) or the project-level (`<cwd>/.codex/hooks.json`) hooks file AND its pinned interpreter and hook script exist. `"state": "ready"` with exit 1 and `"enforcing": false` means the agent is fine but nothing gates tool calls: run `install-hook.cjs` (or re-run it after a node change; `hookRegistration.registered` counts the entries found, `spawnable` those the host can run, `warnings` say what is wrong).
 - `configuration_error`: correct the local key, exact organization name, or optional endpoint settings.
 - `agent_not_registered`: onboard the public key derived from this private key into the named organization.
 - `agent_jailed`: resolve the agent state in Atbash before retrying.
 - `service_error`: check connectivity, endpoint/chain settings, and Atbash service availability.
-- a `warning:` line on standard error about the user-level registration: the pinned interpreter or hook script no longer exists; the user re-runs `install-hook.cjs` with the node they use now. A `note:` line means no user-level entry exists for this plugin's runtime.
+- a `warning:` line on standard error (also in `hookRegistration.warnings`): the pinned interpreter or hook script of a registration no longer exists, or an entry runs a bare `node`; the user re-runs `install-hook.cjs` with the node they use now. A `note:` line means no hooks file or no Atbash entry exists in either scope, so nothing enforces Atbash on Codex 0.154+ until the installer has been run.
 
 Never diagnose key mismatch by asking to inspect the private key. Ask the user to compare the locally derived public key with the public key registered in the Atbash dashboard.
 
