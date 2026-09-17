@@ -1,9 +1,10 @@
 import assert from "node:assert/strict";
+import { existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
-import { join } from "node:path";
+import { isAbsolute, join } from "node:path";
 import test from "node:test";
 
-import { buildAtbashEntry } from "../src/install-hook/hooks-file.js";
+import { buildAtbashEntry, parseHookCommand } from "../src/install-hook/hooks-file.js";
 
 interface PluginManifest {
   name?: unknown;
@@ -98,20 +99,40 @@ test("the user-level installer writes the entry hooks.json declares, with the pl
   const declaredHook = declared?.hooks?.[0];
   assert.ok(declaredHook);
 
-  const installed = buildAtbashEntry("C:\\plugins\\atbash\\runtime\\pre-tool-use.cjs", "win32");
+  const installed = buildAtbashEntry(
+    "C:\\plugins\\atbash\\runtime\\pre-tool-use.cjs",
+    "win32",
+    process.execPath,
+  );
   const installedHook = installed.hooks[0];
   assert.ok(installedHook);
   assert.equal(installed.matcher, declared?.matcher);
   assert.equal(installedHook.type, declaredHook.type);
   assert.equal(installedHook.timeout, declaredHook.timeout);
   assert.equal(installedHook.statusMessage, declaredHook.statusMessage);
+  // Everything but the interpreter token is the same: hooks.json keeps the bare `node` because
+  // it is the plugin-bundled form; the installer embeds the absolute node so the hook does not
+  // depend on the PATH of whatever launched Codex.
+  const withoutInterpreter = (command: unknown) =>
+    String(command).replace(/^(?:node|"[^"]+")\s+/, "");
   assert.equal(
-    installedHook.command,
-    String(declaredHook.command).replace("$PLUGIN_ROOT", "C:/plugins/atbash"),
+    withoutInterpreter(installedHook.command),
+    withoutInterpreter(declaredHook.command).replace("$PLUGIN_ROOT", "C:/plugins/atbash"),
   );
   assert.equal(
-    installedHook.commandWindows,
-    String(declaredHook.commandWindows).replace("%PLUGIN_ROOT%", "C:\\plugins\\atbash"),
+    withoutInterpreter(installedHook.commandWindows),
+    withoutInterpreter(declaredHook.commandWindows).replace("%PLUGIN_ROOT%", "C:\\plugins\\atbash"),
   );
   assert.deepEqual(Object.keys(installedHook).sort(), Object.keys(declaredHook).sort());
+
+  assert.equal(parseHookCommand(declaredHook.command)?.interpreter, undefined, "bare node");
+  const interpreter = parseHookCommand(installedHook.command)?.interpreter;
+  assert.ok(interpreter, "the installer names an interpreter");
+  assert.equal(isAbsolute(interpreter), true);
+  assert.equal(existsSync(interpreter), true);
+  assert.equal(interpreter, process.execPath.replaceAll("\\", "/"));
+  assert.equal(
+    parseHookCommand(installedHook.commandWindows)?.interpreter,
+    process.execPath.replaceAll("/", "\\"),
+  );
 });

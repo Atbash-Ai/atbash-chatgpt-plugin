@@ -21,6 +21,7 @@ function main(): void {
       ...defaultPathContext(),
       runtimeDir: dirname(realpathSync(script)),
       platform: process.platform,
+      nodePath: process.execPath,
     },
     {
       stdout: (text) => process.stdout.write(text),
