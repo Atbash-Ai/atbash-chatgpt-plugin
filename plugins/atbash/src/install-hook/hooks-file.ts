@@ -28,6 +28,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { spawnSync } from "node:child_process";
+import { tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, join } from "node:path";
 
 export const HOOK_SCRIPT = "pre-tool-use.cjs";
@@ -455,10 +456,13 @@ function runProbe(command: string, platform: NodeJS.Platform, timeoutMs: number)
     platform === "win32"
       ? [windowsPowerShellPath(process.env), ["-NoProfile", "-NonInteractive", "-Command", command]]
       : ["/bin/sh", ["-c", command]];
+  // A neutral working directory: with the home variables emptied a relative config lookup would
+  // otherwise resolve against whatever directory the installer was started from.
   const result = spawnSync(shell, args, {
     input: JSON.stringify(PROBE_PAYLOAD),
     encoding: "utf8",
     env,
+    cwd: tmpdir(),
     timeout: timeoutMs,
     windowsHide: true,
   });
@@ -548,24 +552,35 @@ export function directoryWritableByOthers(directory: string, platform: NodeJS.Pl
   }
 }
 
-/** dev + inode of a file: on POSIX a different file at the same path, on Windows a different
- *  file index on the same volume. */
+/** dev + inode + change time of a file. A different file at the same path has another inode
+ *  (POSIX) or file index (Windows) - except when the filesystem hands the freed number straight
+ *  back to the next file, which ext4 does deterministically for an unlink-and-recreate, so the
+ *  change time (new for a recreated file, and for any metadata change) is part of the identity
+ *  too. A metadata change alone (a chmod between the read and the rename) therefore also refuses
+ *  the swap, which fails closed. */
 export interface FileIdentity {
   dev: number;
   ino: number;
+  ctimeMs: number;
 }
 
 export function fileIdentity(path: string): FileIdentity | undefined {
   try {
     const info = statSync(path);
-    return { dev: info.dev, ino: info.ino };
+    return { dev: info.dev, ino: info.ino, ctimeMs: info.ctimeMs };
   } catch {
     return undefined;
   }
 }
 
 export function sameIdentity(a: FileIdentity | undefined, b: FileIdentity | undefined): boolean {
-  return a !== undefined && b !== undefined && a.dev === b.dev && a.ino === b.ino;
+  return (
+    a !== undefined &&
+    b !== undefined &&
+    a.dev === b.dev &&
+    a.ino === b.ino &&
+    a.ctimeMs === b.ctimeMs
+  );
 }
 
 export interface AtomicWriteOptions {
@@ -573,8 +588,9 @@ export interface AtomicWriteOptions {
   /** The bytes read at the start (undefined: the file did not exist). The swap happens only if
    *  the target still holds exactly these. */
   expectedExisting: string | undefined;
-  /** The file's dev/inode when it was read, if it existed: the swap also requires the same file
-   *  object to still be there, so an identical-content replacement is noticed too. */
+  /** The file's dev/inode/change time when it was read, if it existed: the swap also requires
+   *  the same, unchanged file object to still be there, so an identical-content replacement is
+   *  noticed too - by its new inode, or by its new change time where the inode was reused. */
   expectedIdentity?: FileIdentity | undefined;
   /** Runs between the temp-file write and the final check; exists so a test can reproduce a
    *  concurrent edit against the real file. Never set by the CLI. */
@@ -583,7 +599,8 @@ export interface AtomicWriteOptions {
 
 /** Temp file in the target's own directory, private mode, then rename over the target: a reader
  *  sees either the old file or the new one, never a partial write, and a file that changed since
- *  it was read is left as it is. The check is content plus dev/inode, taken just before the rename;
+ *  it was read is left as it is. The check is content plus dev/inode/change time, taken just
+ *  before the rename;
  *  the remaining window (a swap between that check and the rename) needs write access to the
  *  Codex home, and whoever has that can rewrite hooks.json outright - the gate is already theirs. */
 export function writeHooksFileAtomically(

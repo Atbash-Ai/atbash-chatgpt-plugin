@@ -16,6 +16,7 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  renameSync,
   readdirSync,
   realpathSync,
   rmSync,
@@ -38,7 +39,7 @@ import {
   type InstallContext,
   type InstallHookOptions,
 } from "../src/install-hook/cli.js";
-import { inspectRegistration } from "../src/install-hook/registration.js";
+import { inspectRegistration, summarizeRegistrations } from "../src/install-hook/registration.js";
 import {
   HOOK_MATCHER,
   HOOK_STATUS_MESSAGE,
@@ -1088,14 +1089,18 @@ test("install-hook: a file replaced by another file with the same bytes is notic
       assert.equal(removed.action, "removed");
     } else {
       // Same bytes, different inode, between the read and the rename: refused, file left alone.
+      // The replacement is created while the original still exists and then renamed over it, so
+      // the two files cannot share an inode - ext4 hands a freed inode straight back to the next
+      // file, which made an unlink-then-write replacement indistinguishable (seen on WSL2).
       assert.throws(
         () =>
           installHook(
             options({ uninstall: true }),
             context(home, {
               beforeSwap: () => {
-                rmSync(hooksPath);
-                writeFileSync(hooksPath, bytes);
+                const replacement = join(home, ".codex", "hooks.json.replacement");
+                writeFileSync(replacement, bytes);
+                renameSync(replacement, hooksPath);
               },
             }),
           ),
@@ -1109,6 +1114,83 @@ test("install-hook: a file replaced by another file with the same bytes is notic
   }
 });
 
+test("install-hook: the operator-less quoted command is refused by the host-shell probe on win32", () => {
+  // The round-2 host fact: PowerShell treats `"<node>" "<script>"` as a string expression, not a
+  // command - Codex ran the tool with no hook activity. The probe must catch that shape through
+  // the real shell, not only the string check in verifyEntryRoundTrip. /bin/sh executes the same
+  // string, so on POSIX the probe accepts it.
+  const entry = buildAtbashEntry(REAL_HOOK_SCRIPT, process.platform, NODE_PATH);
+  const quoted = {
+    ...entry,
+    hooks: [
+      {
+        ...entry.hooks[0]!,
+        command: `"${NODE_COMMAND}" "${COMMAND_PATH}"`,
+        commandWindows: `"${NODE_PATH}" "${REAL_HOOK_SCRIPT}"`,
+      },
+    ],
+  };
+  if (WIN32) {
+    assert.throws(
+      () => probeRegisteredCommand(quoted, "win32"),
+      /could not be executed by the host shell: (exit \d+|stdout is not one JSON object)/,
+    );
+  } else {
+    assert.doesNotThrow(() => probeRegisteredCommand(quoted, process.platform));
+  }
+});
+
+test("install-hook: status reports no registration as not enforcing, in the summary and not only on stderr", () => {
+  const home = tempHome();
+  try {
+    const user = inspectRegistration(join(home, "hooks.json"), IDENTITY);
+    const project = inspectRegistration(join(home, "project", ".codex", "hooks.json"), IDENTITY);
+    const none = summarizeRegistrations([user, project]);
+    assert.equal(none.registered, 0);
+    assert.equal(none.enforcing, false);
+    assert.equal(none.notes.length, 2, "both scopes explain the absence");
+    // A project-scope registration alone counts: the host reads that file for the open project.
+    assert.equal(
+      installHook(options({ scope: "project", dir: join(home, "project") }), context(home)).action,
+      "installed",
+    );
+    const some = summarizeRegistrations([
+      inspectRegistration(join(home, "hooks.json"), IDENTITY),
+      inspectRegistration(join(home, "project", ".codex", "hooks.json"), IDENTITY),
+    ]);
+    assert.equal(some.registered, 1);
+    assert.equal(some.enforcing, true);
+    assert.deepEqual(some.warnings, []);
+  } finally {
+    rmSync(home, { force: true, recursive: true });
+  }
+});
+
+test("install-hook: a file recreated with the same bytes and a reused inode is noticed by its change time", () => {
+  // ext4 hands a freed inode straight back to the next file, so dev+inode alone compared equal
+  // for an unlink-and-recreate with identical bytes (seen on WSL2). The change time is new.
+  const home = tempHome();
+  try {
+    const a = join(home, "a.json");
+    writeFileSync(a, "{}");
+    const before = fileIdentity(a);
+    assert.ok(before);
+    // Wait past the clock's resolution so a recreated file cannot share the change time.
+    const started = Date.now();
+    while (Date.now() - started < 20) {
+      /* spin */
+    }
+    rmSync(a);
+    writeFileSync(a, "{}");
+    const after = fileIdentity(a);
+    assert.ok(after);
+    assert.equal(sameIdentity(before, after), false, "same bytes, recreated: a different file");
+    assert.equal(sameIdentity(after, fileIdentity(a)), true, "unchanged since: the same file");
+  } finally {
+    rmSync(home, { force: true, recursive: true });
+  }
+});
+
 test("install-hook: status reports a registration whose interpreter or script no longer exists", () => {
   const home = tempHome();
   try {
@@ -1117,7 +1199,7 @@ test("install-hook: status reports a registration whose interpreter or script no
     let report = inspectRegistration(hooksPath, IDENTITY);
     assert.equal(report.registered, 0);
     assert.deepEqual(report.warnings, []);
-    assert.match(report.notes[0] ?? "", /no user-level hooks file/);
+    assert.match(report.notes[0] ?? "", /no hooks file/);
 
     // A healthy registration written by the installer.
     assert.equal(installHook(options({ dir: home }), context(home)).action, "installed");
@@ -1246,6 +1328,10 @@ test("install-hook: the built installer (dist and the committed runtime) registe
       assert.doesNotMatch(status.stderr, /^warning:/m, status.stderr);
       assert.doesNotMatch(status.stderr, /^note:/m, status.stderr);
       assert.match(status.stdout, /"state": "configuration_error"/);
+      // The registration is part of the JSON, not only of stderr: a wrapper reading the status
+      // sees that a hook is in place (and would see "enforcing": false when none is).
+      assert.match(status.stdout, /"enforcing": true/);
+      assert.match(status.stdout, /"registered": 1/);
 
       const dry = run(["--dry-run", "--uninstall", "--dir", home]);
       assert.equal(dry.status, EXIT_OK, dry.stderr);

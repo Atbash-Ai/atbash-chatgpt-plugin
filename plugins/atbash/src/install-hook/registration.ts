@@ -34,7 +34,7 @@ export function inspectRegistration(
   const report: RegistrationReport = { hooksPath, registered: 0, warnings: [], notes: [] };
   if (!existsSync(hooksPath)) {
     report.notes.push(
-      `no user-level hooks file at ${hooksPath}; on Codex 0.154+ nothing enforces Atbash until install-hook.cjs has been run.`,
+      `no hooks file at ${hooksPath}; on Codex 0.154+ nothing enforces Atbash until install-hook.cjs has been run.`,
     );
     return report;
   }
@@ -84,4 +84,30 @@ export function inspectRegistration(
     );
   }
   return report;
+}
+
+export interface RegistrationSummary {
+  /** Atbash entries found across every inspected hooks file. */
+  registered: number;
+  /** True only when at least one Atbash entry exists: with none, nothing enforces Atbash on
+   *  Codex 0.154+, whatever the agent status says. */
+  enforcing: boolean;
+  warnings: string[];
+  notes: string[];
+}
+
+/** One answer over the user-level and project-level files: a status that says "ready" while no
+ *  hook is registered would be a permissive answer about whether the gate exists at all. */
+export function summarizeRegistrations(
+  reports: readonly RegistrationReport[],
+): RegistrationSummary {
+  const registered = reports.reduce((sum, report) => sum + report.registered, 0);
+  return {
+    registered,
+    enforcing: registered > 0,
+    warnings: reports.flatMap((report) => report.warnings),
+    // A scope with no entry is worth a note only when no scope has one: an absent project file
+    // next to a healthy user-level registration is the normal state, not a finding.
+    notes: registered > 0 ? [] : reports.flatMap((report) => report.notes),
+  };
 }
