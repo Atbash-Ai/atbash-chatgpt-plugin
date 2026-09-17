@@ -72,9 +72,9 @@ Codex does run the same hook from a user-level (`~/.codex/hooks.json`, or `[hook
 node plugins/atbash/runtime/install-hook.cjs
 ```
 
-Useful flags: `--dry-run` (print the resulting file, write nothing), `--scope project`, `--dir <codex home or project dir>`, `--uninstall` (remove only the Atbash entry). The installer registers the absolute path of the `runtime/pre-tool-use.cjs` next to it, keeps every other hook in the file, replaces an existing Atbash entry instead of duplicating it, refuses a file that is not valid JSON in the documented hook shape (exit 1, file untouched), and writes atomically with mode `0600` on macOS/Linux.
+The user should run it with the node they want the hook to use: the installer registers `"<absolute node>" "<absolute pre-tool-use.cjs>"` (the node that ran it and the hook script next to it, both real paths), so the hook does not depend on the `PATH` of whatever launched Codex. Useful flags: `--dry-run` (print the Atbash entry that would be written and a count of what is kept, write nothing), `--scope project`, `--dir <codex home or project dir>`, `--uninstall` (remove only the Atbash entry). The installer keeps every other hook in the file, replaces an existing Atbash entry (recognised by its status message or by naming this hook script) instead of duplicating it, leaves another vendor's `pre-tool-use.cjs` alone, refuses a file that is not valid JSON in the documented hook shape (exit 1, file untouched), refuses a plugin or node path containing characters a shell could interpret (exit 1; the user moves the plugin to a plain path), updates a symlinked file through the link, and writes atomically with mode `0600` on macOS/Linux only if the file is unchanged since it was read. Its output names the hook command and the interpreter it registered; a `warning:` line on standard error means the hooks directory is writable by other users.
 
-Then two steps remain that only the user can do: restart Codex so it reads the hooks file, and trust the Atbash `PreToolUse` hook in `/hooks`. Codex does not run an untrusted hook; `--dangerously-bypass-hook-trust` is for CI only.
+Then two steps remain that only the user can do: restart Codex so it reads the hooks file, and trust the Atbash `PreToolUse` hook in `/hooks`. Codex does not run an untrusted hook; never suggest bypassing hook trust.
 
 Manual fallback (`~/.codex/hooks.json`, absolute path of the user's copy of the plugin):
 
@@ -87,7 +87,7 @@ Manual fallback (`~/.codex/hooks.json`, absolute path of the user's copy of the 
         "hooks": [
           {
             "type": "command",
-            "command": "node \"/absolute/path/to/plugins/atbash/runtime/pre-tool-use.cjs\"",
+            "command": "\"/absolute/path/to/node\" \"/absolute/path/to/plugins/atbash/runtime/pre-tool-use.cjs\"",
             "timeout": 35,
             "statusMessage": "Checking action with Atbash"
           }
@@ -98,7 +98,7 @@ Manual fallback (`~/.codex/hooks.json`, absolute path of the user's copy of the 
 }
 ```
 
-On Windows add `"commandWindows": "node \"C:\\path\\to\\plugins\\atbash\\runtime\\pre-tool-use.cjs\""` beside `command`.
+The node path is the output of `node -p process.execPath`, not a bare `node`. On Windows add `"commandWindows": "\"C:\\path\\to\\node.exe\" \"C:\\path\\to\\plugins\\atbash\\runtime\\pre-tool-use.cjs\""` beside `command`.
 
 ## Verify and troubleshoot
 

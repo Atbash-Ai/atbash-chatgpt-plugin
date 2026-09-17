@@ -37,7 +37,9 @@ Codex does run the very same hook when it is registered at the user level (`~/.c
 node plugins/atbash/runtime/install-hook.cjs
 ```
 
-Run it from a clone of this repository, or from the directory Codex installed the plugin into; the command it registers is the absolute path of the `runtime/pre-tool-use.cjs` next to it (resolved through the real path, with forward slashes; on Windows a `commandWindows` variant with backslashes is added, matching `hooks/hooks.json`). Options: `--dry-run` prints the exact resulting file and writes nothing; `--scope project` writes `<project>/.codex/hooks.json` instead of the user file; `--dir <path>` names the Codex home (user scope; the default is `$CODEX_HOME`, then `~/.codex`) or the project directory; `--uninstall` removes only the Atbash entry. An existing file is touched only if it is valid JSON in the documented hook shape, and then other hooks, other events, and unknown keys are preserved verbatim; an existing Atbash entry (recognised by its `pre-tool-use.cjs` command) is replaced rather than duplicated; the file is replaced atomically (temp file and rename) with mode `0600` on macOS/Linux. Exit codes: `0` done or nothing to do, `1` refused or failed with the file left as it was, `2` usage.
+Run it with the node you want the hook to use, from a clone of this repository or from the directory Codex installed the plugin into. The command it registers is `"<absolute node>" "<absolute pre-tool-use.cjs>"`: the real path of the `runtime/pre-tool-use.cjs` next to the installer and the real path of the node that ran it (`process.execPath`), so the hook does not depend on the `PATH` of whatever launched Codex (a launcher or Dock icon whose `PATH` lacks an nvm node could not spawn a bare `node` hook, and a hook that cannot spawn returns no decision). On Windows `command` carries both paths with forward slashes and a `commandWindows` variant carries them with backslashes, matching `hooks/hooks.json`. Both paths go into a shell string unescaped, so they are allowlisted (letters, digits, space, `_ . : / + @ ( ) -`, plus `\` on Windows); a plugin or node under any other path is refused with exit `1`, and after building the entry the installer parses both paths back out of the command and refuses unless they resolve to the same two files.
+
+Options: `--dry-run` prints the Atbash entry that would be written plus a count of what is kept (never the rest of the file, whose foreign commands may carry tokens) and writes nothing; `--scope project` writes `<project>/.codex/hooks.json` instead of the user file; `--dir <path>` names the Codex home (user scope; the default is `$CODEX_HOME`, then `~/.codex`) or the project directory; `--uninstall` removes only the Atbash entry. An existing file is touched only if it is valid JSON in the documented hook shape (a parse error is reported by position, never by content), and then other hooks, other events, and unknown keys are preserved verbatim. An existing Atbash entry is recognised by an Atbash-specific signal only, its `statusMessage` or a command naming this very hook script (trailing arguments tolerated), and is replaced rather than duplicated; another vendor's hook that happens to be called `pre-tool-use.cjs` is left alone and mentioned on standard error. A symlinked `hooks.json` is updated through the link (the real file is replaced, the link stays); the replacement is atomic (temp file in the real directory, then rename), happens only if the file still holds the bytes that were read, and gets mode `0600` on macOS/Linux, where a hooks directory writable by other users also draws a warning (Windows permissions are ACLs; no mode check is made there). Exit codes: `0` done or nothing to do, `1` refused or failed with the file left as it was, `2` usage.
 
 Two steps remain yours, and the installer prints them:
 
@@ -55,7 +57,7 @@ Manual fallback, if you would rather write the file yourself (`~/.codex/hooks.js
         "hooks": [
           {
             "type": "command",
-            "command": "node \"/absolute/path/to/plugins/atbash/runtime/pre-tool-use.cjs\"",
+            "command": "\"/absolute/path/to/node\" \"/absolute/path/to/plugins/atbash/runtime/pre-tool-use.cjs\"",
             "timeout": 35,
             "statusMessage": "Checking action with Atbash"
           }
@@ -66,7 +68,7 @@ Manual fallback, if you would rather write the file yourself (`~/.codex/hooks.js
 }
 ```
 
-On Windows add `"commandWindows": "node \"C:\\path\\to\\plugins\\atbash\\runtime\\pre-tool-use.cjs\""` beside `command`. Then trust the hook in `/hooks` and restart Codex, exactly as above.
+Use the absolute path of your node (`node -p process.execPath`) rather than a bare `node`, for the `PATH` reason above. On Windows add `"commandWindows": "\"C:\\path\\to\\node.exe\" \"C:\\path\\to\\plugins\\atbash\\runtime\\pre-tool-use.cjs\""` beside `command`. Then trust the hook in `/hooks` and restart Codex, exactly as above.
 
 ## Configure your agent locally
 
