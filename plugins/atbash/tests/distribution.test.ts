@@ -1,7 +1,9 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import test from "node:test";
 
 import { makeHookInput } from "./fixtures.js";
@@ -85,7 +87,40 @@ test("marketplace package includes the setup skill", () => {
 
   assert.equal(packageJson.files?.includes("skills"), true);
   assert.equal(manifest.skills, "./skills/");
+  assert.equal(existsSync("skills/atbash-setup/scripts/prepare-config.mjs"), true);
   assert.match(skill, /^---\r?\nname: atbash-setup\r?\n/);
   assert.doesNotMatch(skill, /\[TODO:/);
   assert.match(skillInterface, /\$atbash-setup/);
+});
+
+test("setup helper creates a template without replacing an existing config", () => {
+  const tempRoot = mkdtempSync(join(tmpdir(), "atbash-setup-"));
+  const configDir = join(tempRoot, "atbash");
+  const configPath = join(configDir, "config.json");
+
+  try {
+    const firstRun = spawnSync(
+      process.execPath,
+      ["skills/atbash-setup/scripts/prepare-config.mjs", "--config-dir", configDir, "--no-open"],
+      { cwd: process.cwd(), encoding: "utf8" },
+    );
+    assert.equal(firstRun.status, 0, firstRun.stderr);
+    assert.deepEqual(JSON.parse(readFileSync(configPath, "utf8")), {
+      agentKey: "",
+      orgName: "",
+    });
+
+    const existingConfig = '{"agentKey":"opaque-sentinel-value","orgName":"Existing Org"}\n';
+    writeFileSync(configPath, existingConfig, "utf8");
+    const secondRun = spawnSync(
+      process.execPath,
+      ["skills/atbash-setup/scripts/prepare-config.mjs", "--config-dir", configDir, "--no-open"],
+      { cwd: process.cwd(), encoding: "utf8" },
+    );
+    assert.equal(secondRun.status, 0, secondRun.stderr);
+    assert.equal(readFileSync(configPath, "utf8"), existingConfig);
+    assert.doesNotMatch(secondRun.stdout, /opaque-sentinel-value/);
+  } finally {
+    rmSync(tempRoot, { force: true, recursive: true });
+  }
 });

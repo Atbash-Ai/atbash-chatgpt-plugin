@@ -39,7 +39,9 @@ After installation, fully restart Codex, open `/hooks`, and trust the changed At
 
 ## Configure your agent locally
 
-Create `~/.config/atbash/config.json` on macOS/Linux or `%USERPROFILE%\.config\atbash\config.json` on Windows, using a local editor outside the conversation:
+Invoke `$atbash-setup` after installing the plugin. The setup skill creates an empty config template when needed and opens it in a graphical editor: Notepad on Windows, TextEdit on macOS, or the desktop's default editor on Linux. It never reads or overwrites an existing config.
+
+Enter the values locally in the opened file, then save and close it:
 
 ```json
 {
@@ -49,6 +51,8 @@ Create `~/.config/atbash/config.json` on macOS/Linux or `%USERPROFILE%\.config\a
 ```
 
 Protect the directory and file with permissions `700` and `600` on macOS/Linux. The organization is required and must match the organization where your agent is registered. Each user supplies their own credentials. Never upload the configuration or paste a private key into chat.
+
+After you confirm that the editor is closed, the setup skill runs the local status check. You must still review and trust the exact Atbash hook definition through `/hooks`; Codex intentionally keeps that security decision manual.
 
 The SDK uses the key locally for identity and signing. The hook calls `auditToolCall()` with the tool name, arguments, and limited execution context. The SDK handles redaction and communication with Atbash. Network access to Atbash and the configured chain services must be available in the hook's execution environment.
 

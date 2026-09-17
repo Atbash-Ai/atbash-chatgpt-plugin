@@ -12,39 +12,34 @@ Keep Atbash enforcement separate from this skill. The plugin's catch-all `PreToo
 - Never ask the user to paste, upload, or reveal an Atbash private key in chat.
 - Never read, print, log, inspect, or transmit the user's Atbash config file.
 - Never place a private key in a prompt, tool argument, command-line argument, shell history, manifest, repository file, or `.env` file.
-- Ask the user to edit the config locally themselves. If a private key has appeared in chat, logs, or version control, advise the user to revoke or rotate it before continuing.
+- The bundled setup helper may create an empty config template and open it in a local graphical editor. It must never overwrite or inspect an existing config.
+- Ask the user to enter credentials directly in the graphical editor. If a private key has appeared in chat, logs, or version control, advise the user to revoke or rotate it before continuing.
 - Explain that the SDK uses the private key locally for agent identity and cryptographic signing and derives the public key locally. The configuration file remains on the user's machine; the plugin does not operate a credential-holding MCP server.
 
-## Configure before trusting the hook
+## Prepare the local configuration
 
-Tell the user to create the SDK config outside the Codex conversation before trusting the hook. The organization name is required and must exactly match the organization where the agent's derived public key is onboarded.
+Before trusting the hook, run the bundled `scripts/prepare-config.mjs` helper from this skill directory. Do this automatically when the user asks to set up Atbash; do not merely print setup commands.
 
-Use this JSON shape at `~/.config/atbash/config.json` on macOS/Linux or `%USERPROFILE%\.config\atbash\config.json` on Windows:
+The helper:
+
+- creates `~/.config/atbash/` on macOS/Linux or `%USERPROFILE%\.config\atbash\` on Windows;
+- creates `config.json` with empty `agentKey` and `orgName` values only when the file does not exist;
+- tightens directory and file permissions on macOS/Linux;
+- opens the file in Notepad on Windows, TextEdit on macOS, or the desktop's default text editor on Linux; and
+- never reads, prints, replaces, or transmits an existing config.
+
+If the graphical editor cannot be opened, report the config path and ask the user to open it in a local graphical editor. Do not fall back to displaying or editing the file in the terminal.
+
+Tell the user to enter this shape in the opened file, save it, close the editor, and reply when finished:
 
 ```json
 {
-  "agentKey": "<your-agent-private-key>",
-  "orgName": "<your-exact-organization-name>"
+  "agentKey": "YOUR_PRIVATE_KEY",
+  "orgName": "YOUR_EXACT_ORGANIZATION_NAME"
 }
 ```
 
-Give the user these manual setup commands without executing them or asking for their resulting file contents.
-
-macOS/Linux:
-
-```bash
-mkdir -p ~/.config/atbash
-chmod 700 ~/.config/atbash
-${EDITOR:-vi} ~/.config/atbash/config.json
-chmod 600 ~/.config/atbash/config.json
-```
-
-Windows PowerShell:
-
-```powershell
-New-Item -ItemType Directory -Force "$HOME\.config\atbash"
-notepad "$HOME\.config\atbash\config.json"
-```
+The organization name is required and must exactly match the organization where the agent's derived public key is onboarded. Never ask the user to show the saved file or its contents.
 
 Environment variables `ATBASH_AGENT_KEY` and `ATBASH_ORG_NAME` are a session-only alternative. Prefer the config file for Codex desktop because environment changes do not reach an already-running desktop process.
 
@@ -63,13 +58,15 @@ To deactivate Atbash, tell the user to disable the plugin or untrust/disable its
 
 ## Verify and troubleshoot
 
-After configuration and activation, use a harmless tool call such as listing the current directory to verify that the hook allows an ordinary action. Do not use destructive or privileged commands as tests.
-
-If working from a source checkout, the user can run:
+After the user confirms that the graphical editor was saved and closed, run the installed plugin's `runtime/status.cjs` without reading the config directly. If working from a source checkout, run:
 
 ```bash
 npm run status --workspace @atbash/codex-plugin
 ```
+
+When the status is `ready`, tell the user to review and trust the Atbash hook through `/hooks`, fully restart Codex if the hook definition changed, and start a new task. Hook trust is deliberately a manual Codex security review and must not be bypassed or edited directly in config files.
+
+After configuration and activation, use a harmless tool call such as listing the current directory to verify that the hook allows an ordinary action. Do not use destructive or privileged commands as tests.
 
 Interpret status results as follows:
 
@@ -92,4 +89,4 @@ Do not claim that the plugin covers plain text responses, hosted tools that opt 
 
 ## Rotate a key
 
-Ask the user to rotate or revoke the old key in Atbash, replace `agentKey` in the local config themselves, verify the derived public key is onboarded to the exact organization, and start a new Codex task. Never handle either key value in the conversation.
+Ask the user to rotate or revoke the old key in Atbash, then run the bundled setup helper to open the existing config in the graphical editor without reading it. The user replaces `agentKey` locally, verifies the derived public key is onboarded to the exact organization, and starts a new Codex task. Never handle either key value in the conversation.
