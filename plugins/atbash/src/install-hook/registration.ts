@@ -36,6 +36,25 @@ export interface RegistrationReport {
   notes: string[];
 }
 
+/** A value from the hooks file, rendered for a warning: a finite number or a short string as it
+ *  is, anything longer or of another type by its shape only - the file is content the user (or,
+ *  at project scope, a checked-out repository) controls, and a warning goes to the transcript. */
+function shape(value: unknown): string {
+  if (typeof value === "number" && Number.isFinite(value)) return JSON.stringify(value);
+  if (typeof value === "string") {
+    return value.length <= 32 && !/[\p{Cc}]/u.test(value)
+      ? JSON.stringify(value)
+      : `a string of ${value.length} characters`;
+  }
+  return `a ${value === null ? "null" : typeof value} value`;
+}
+
+/** A path from an own entry is this plugin's own (it named our script) and is shown; a path
+ *  from a look-alike is somebody else's file content and is shown by length only. */
+function shown(path: string, own: boolean): string {
+  return own ? path : `a path of ${path.length} characters`;
+}
+
 export function inspectRegistration(
   hooksPath: string,
   identity: AtbashIdentity,
@@ -91,46 +110,55 @@ export function inspectRegistration(
       } else if (!existsSync(parsed.interpreter)) {
         spawnable = false;
         report.warnings.push(
-          `${label} names an interpreter that no longer exists (${parsed.interpreter}); the host cannot spawn it. Re-run install-hook.cjs with the node you use now.`,
+          `${label} names an interpreter that no longer exists (${shown(parsed.interpreter, own)}); the host cannot spawn it. Re-run install-hook.cjs with the node you use now.`,
         );
       }
       if (!existsSync(parsed.script)) {
         spawnable = false;
         report.warnings.push(
-          `${label} names a hook script that no longer exists (${parsed.script}); re-run install-hook.cjs from the plugin's current location.`,
+          `${label} names a hook script that no longer exists (${shown(parsed.script, own)}); re-run install-hook.cjs from the plugin's current location.`,
         );
       }
       // Spawnable is still not a gate when the host would not run the entry as the installer
-      // wrote it: a hook type other than "command", a matcher that covers some tools only, or a
-      // timeout under the shim's largest deadline (the host cuts the hook off when the timeout
-      // expires and proceeds with the tool call - measured on Codex 0.154.0). Each is reported
-      // by the field, and none counts toward enforcing.
+      // wrote it: a hook type other than "command", a matcher other than the catch-all (an absent
+      // or empty one is not what the installer writes and its coverage on this host is not
+      // measured), or a timeout under the shim's own worst case - or none at all, which leaves
+      // the host's default, not measured either (the host cuts the hook off when the timeout
+      // expires and proceeds with the tool call - measured on Codex 0.154.0). Each is reported by
+      // the field, with the value shown only when it is short (a matcher or a timeout is file
+      // content a checked-out repository controls), and none counts toward enforcing.
       if (own) {
         const fields =
           typeof hook === "object" && hook !== null ? (hook as Record<string, unknown>) : {};
         if (fields.type !== "command") {
           spawnable = false;
           report.warnings.push(
-            `${label} has type ${JSON.stringify(fields.type)} instead of "command"; the host will not run it as a command hook. Re-run install-hook.cjs.`,
+            `${label} has type ${shape(fields.type)} instead of "command"; the host will not run it as a command hook. Re-run install-hook.cjs.`,
           );
         }
         const matcher = group.matcher;
-        if (matcher !== undefined && matcher !== "" && matcher !== HOOK_MATCHER) {
+        if (matcher !== HOOK_MATCHER) {
           spawnable = false;
           report.warnings.push(
-            `${label} is under matcher ${JSON.stringify(matcher)} and covers only the tools that matcher names, not every tool call; re-run install-hook.cjs to register it under "${HOOK_MATCHER}".`,
+            matcher === undefined || matcher === ""
+              ? `${label} has ${matcher === undefined ? "no matcher" : "an empty matcher"}; which tool calls the host routes to it is not measured, so it does not count as a gate. Re-run install-hook.cjs to register it under "${HOOK_MATCHER}".`
+              : `${label} is under matcher ${shape(matcher)} and covers only the tools that matcher names, not every tool call; re-run install-hook.cjs to register it under "${HOOK_MATCHER}".`,
           );
         }
         const timeout = fields.timeout;
-        if (
-          timeout !== undefined &&
-          (typeof timeout !== "number" ||
-            !Number.isFinite(timeout) ||
-            timeout < HOOK_TIMEOUT_FLOOR_SECONDS)
+        if (timeout === undefined) {
+          spawnable = false;
+          report.warnings.push(
+            `${label} has no timeout; the host's default is not measured to outlast the hook's own deadline, so it does not count as a gate. Re-run install-hook.cjs (it writes ${HOOK_TIMEOUT_SECONDS}).`,
+          );
+        } else if (
+          typeof timeout !== "number" ||
+          !Number.isFinite(timeout) ||
+          timeout < HOOK_TIMEOUT_FLOOR_SECONDS
         ) {
           spawnable = false;
           report.warnings.push(
-            `${label} has timeout ${JSON.stringify(timeout)}; the host cuts a hook off when its timeout expires and proceeds with the tool call, so anything under ${HOOK_TIMEOUT_FLOOR_SECONDS} s cannot outlast the hook's own deadline. Re-run install-hook.cjs (it writes ${HOOK_TIMEOUT_SECONDS}).`,
+            `${label} has timeout ${shape(timeout)}; the host cuts a hook off when its timeout expires and proceeds with the tool call, so anything under ${HOOK_TIMEOUT_FLOOR_SECONDS} s cannot outlast the hook's own deadline and its exit. Re-run install-hook.cjs (it writes ${HOOK_TIMEOUT_SECONDS}).`,
           );
         }
       }
@@ -159,6 +187,10 @@ export interface RegistrationSummary {
   registered: number;
   /** Of those, the entries whose interpreter and script exist, so the host can spawn them. */
   spawnable: number;
+  /** Registered entries that are not live gates (a dead pin, a narrow matcher, a short or
+   *  missing timeout, another hook type). Non-zero lowers the status exit code even when another
+   *  scope holds a healthy entry: which scope the host lets win is not measured. */
+  degraded: number;
   /** True only when at least one Atbash entry exists AND the host can spawn it: with none,
    *  nothing enforces Atbash on Codex 0.154+, whatever the agent status says - and a registered
    *  entry whose pinned node is gone is exactly a hook the host cannot run. */
@@ -182,6 +214,7 @@ export function summarizeRegistrations(
     })),
     registered,
     spawnable,
+    degraded: registered - spawnable,
     enforcing: spawnable > 0,
     warnings: reports.flatMap((report) => report.warnings),
     // A scope with no entry is worth a note only when no scope has one: an absent project file

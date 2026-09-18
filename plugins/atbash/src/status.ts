@@ -48,8 +48,11 @@ async function main(): Promise<void> {
       ? { inspected: false as const, enforcing: false as const }
       : { inspected: true as const, ...registration };
   process.stdout.write(`${JSON.stringify({ ...status, hookRegistration }, null, 2)}\n`);
-  // Exit 0 only when the agent is ready AND a hook is registered somewhere the host reads.
-  process.exitCode = status.ready && hookRegistration.enforcing ? 0 : 1;
+  // Exit 0 only when the agent is ready AND a hook is registered somewhere the host reads AND no
+  // registered entry is a dead or narrowed one: a healthy user-level entry does not vouch for a
+  // project-level entry the host may prefer, and the warning above names which one to fix.
+  process.exitCode =
+    status.ready && hookRegistration.enforcing && (hookRegistration.degraded ?? 0) === 0 ? 0 : 1;
 }
 
 void main();
