@@ -79,6 +79,34 @@ if (process.platform === "win32") {
     );
   });
 
+  test(
+    "persistent ACL timeout closes a real owned helper with a stalled reply",
+    { timeout: 35_000 },
+    async (t) => {
+      const observation = observe(t);
+      const fixture = await createFixture();
+      const directory = join(fixture, "private");
+      const session = new WindowsStorageSession();
+      try {
+        await session.prepareDirectory(directory);
+        const file = join(directory, "marker");
+        await writeFile(file, "public fixture");
+        await session.verifyFile(file);
+        assert.equal(observation.children.length, 1);
+        observation.children[0]!.stdout!.pause();
+        const pending = assert.rejects(session.verifyFile(file), /cannot be verified/);
+        // Exercise the real request deadline and OS process cleanup. Timer
+        // virtualization is confined to the separate fake-process budget tests.
+        await pending;
+      } finally {
+        await session.dispose();
+      }
+      assert.ok(
+        observation.children.every((child) => child.exitCode !== null || child.signalCode !== null),
+      );
+    },
+  );
+
   test("persistent ACL helper rejects malformed raw requests before touching paths", async (t) => {
     const observation = observe(t);
     const fixture = await createFixture();
@@ -282,6 +310,9 @@ if (process.platform === "win32") {
           await assert.rejects(session.verifyFile("C:\\public-fixture"), /cannot be verified/);
         }
       } finally {
+        // Model the later close separately: exit has already been delivered,
+        // but this fake process does not automatically close with its pipes.
+        child.end(1, null);
         await session.dispose();
         restore();
       }

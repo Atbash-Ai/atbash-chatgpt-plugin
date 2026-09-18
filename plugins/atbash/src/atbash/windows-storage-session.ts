@@ -103,7 +103,9 @@ export class WindowsStorageSession {
   #failed = false;
   #finishing = false;
   #exited = false;
+  #processExited = false;
   #cleanExit = false;
+  #cleanup: Promise<void> | undefined;
 
   constructor() {
     const systemRoot = process.env.SystemRoot;
@@ -126,16 +128,22 @@ export class WindowsStorageSession {
       { windowsHide: true, shell: false, stdio: ["pipe", "pipe", "pipe"] },
     );
     this.#lifetime = setTimeout(() => this.#poison(), LIFETIME_MS);
+    this.#child.once("exit", (code, signal) => {
+      this.#processExited = true;
+      this.#cleanExit = code === 0 && signal === null;
+      if (!this.#finishing || this.#pending || this.#buffer.length || !this.#cleanExit)
+        this.#poison();
+    });
     this.#closed = new Promise((resolve) => {
       this.#child.once("close", (code, signal) => {
         this.#exited = true;
-        this.#cleanExit = code === 0 && signal === null;
+        this.#cleanExit = this.#processExited && this.#cleanExit && code === 0 && signal === null;
         if (!this.#finishing || this.#pending || this.#buffer.length || !this.#cleanExit)
           this.#poison();
         resolve();
       });
     });
-    this.#child.once("error", () => this.#poison());
+    this.#child.on("error", () => this.#poison());
     this.#child.stdin.on("error", () => this.#poison());
     this.#child.stdout.on("error", () => this.#poison());
     this.#child.stderr.on("error", () => this.#poison());
@@ -153,6 +161,7 @@ export class WindowsStorageSession {
   }
 
   #poison(): void {
+    if (this.#failed) return;
     this.#failed = true;
     clearTimeout(this.#lifetime);
     const pending = this.#pending;
@@ -163,7 +172,18 @@ export class WindowsStorageSession {
     }
     this.#buffer = [];
     this.#child.stdin.destroy();
-    if (!this.#exited) this.#child.kill();
+    this.#child.stdout.destroy();
+    this.#child.stderr.destroy();
+    this.#terminate();
+  }
+
+  #terminate(signal: NodeJS.Signals = "SIGTERM"): void {
+    if (this.#processExited) return;
+    try {
+      this.#child.kill(signal);
+    } catch {
+      // Only confirmed closure can finish cleanup; signaling errors are not success.
+    }
   }
 
   #receive(chunk: Buffer): void {
@@ -258,12 +278,16 @@ export class WindowsStorageSession {
         reject,
       };
       this.#pending = pending;
-      this.#child.stdin.write(bytes, (error) => {
-        if (error) return this.#poison();
-        if (this.#pending !== pending) return;
-        pending.written = true;
-        this.#settle();
-      });
+      try {
+        this.#child.stdin.write(bytes, (error) => {
+          if (error) return this.#poison();
+          if (this.#pending !== pending) return;
+          pending.written = true;
+          this.#settle();
+        });
+      } catch {
+        this.#poison();
+      }
     });
   }
 
@@ -277,21 +301,21 @@ export class WindowsStorageSession {
     return this.#request("verify-storage", path, files);
   }
 
-  async #awaitExit(): Promise<void> {
-    let timer: NodeJS.Timeout | undefined;
-    try {
-      await Promise.race([
-        this.#closed,
-        new Promise<never>((_resolve, reject) => {
-          timer = setTimeout(() => {
-            this.#poison();
-            reject(new Error(FAILURE));
-          }, CLEANUP_MS);
-        }),
-      ]);
-    } finally {
-      clearTimeout(timer);
+  #awaitExit(): Promise<void> {
+    if (!this.#cleanup) {
+      this.#cleanup = new Promise<void>((resolve, reject) => {
+        const timer = setTimeout(() => {
+          this.#poison();
+          this.#terminate("SIGKILL");
+          reject(new Error(FAILURE));
+        }, CLEANUP_MS);
+        void this.#closed.then(() => {
+          clearTimeout(timer);
+          resolve();
+        });
+      });
     }
+    return this.#cleanup;
   }
 
   async finish(): Promise<void> {
@@ -301,7 +325,11 @@ export class WindowsStorageSession {
       throw new Error(FAILURE);
     }
     this.#finishing = true;
-    this.#child.stdin.end();
+    try {
+      this.#child.stdin.end();
+    } catch {
+      this.#poison();
+    }
     await this.#awaitExit();
     clearTimeout(this.#lifetime);
     if (this.#failed || !this.#cleanExit || performance.now() >= this.#deadline)

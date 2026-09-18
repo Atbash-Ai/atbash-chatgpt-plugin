@@ -34,6 +34,10 @@ childProcess.spawn = (...args) => {
     child.stdin.write = (chunk, ...rest) => {
       const request = JSON.parse(Buffer.from(chunk).toString('utf8'));
       helperRequests.push({operation:request.operation,sequence:request.sequence});
+      if (mode === 'helper-exit-' + request.sequence) {
+        boundaries.push('helper-exit-' + request.sequence);
+        child.kill();
+      }
       return write(chunk, ...rest);
     };
   }
@@ -78,6 +82,7 @@ const {bootstrapWindowsIdentity} = await import(pathToFileURL(resolve('plugins/a
 let result;
 let failed = false;
 let message;
+const started = performance.now();
 try {
   if (mode === 'import-only') result = {state:'imported'};
   else if (mode === 'read') {
@@ -87,7 +92,7 @@ try {
   else if (mode === 'override-path') result = await bootstrapWindowsIdentity({keyPath:''});
   else result = await bootstrapWindowsIdentity();
 } catch (error) { failed = true; message = error.message; }
-process.stdout.write(JSON.stringify({failed,message,result,generated,storageCalls,secretWrites,boundaries,helperCount:helpers.length,helpersClosed:helpers.every(h=>h.closed),helperRequests}));
+process.stdout.write(JSON.stringify({failed,message,result,generated,storageCalls,secretWrites,boundaries,helperCount:helpers.length,helpersClosed:helpers.every(h=>h.closed),helperRequests,elapsedMs:Math.round(performance.now()-started)}));
 `;
 
 interface ChildResult {
@@ -101,6 +106,7 @@ interface ChildResult {
   helperCount: number;
   helpersClosed: boolean;
   helperRequests: { operation: string; sequence: number }[];
+  elapsedMs: number;
 }
 
 async function run(
@@ -312,9 +318,54 @@ if (process.platform === "win32") {
     }
   }
 
-  test("bootstrap publishes one native identity, survives SDK restart and refuses replacement", async () => {
+  for (const sequence of [4, 5, 6, 7, 8]) {
+    test(`bootstrap helper termination at boundary ${sequence} refuses readiness and preserves identity`, async () => {
+      const home = await createFixture();
+      const result = await run(home, `helper-exit-${sequence}`);
+      assert.deepEqual(result.boundaries, [`helper-exit-${sequence}`]);
+      assert.equal(result.helperCount, 1);
+      assert.equal(result.helpersClosed, true);
+      assert.equal(result.failed, true);
+      assert.equal(result.result, undefined);
+      assert.equal(result.generated, sequence >= 5 ? 1 : 0);
+      assert.equal(result.secretWrites, sequence >= 6 ? 1 : 0);
+      assert.equal(
+        result.message,
+        "Local identity setup could not safely finish. Existing files were preserved.",
+      );
+      const directory = join(home, ".config", "atbash");
+      const stage = join(directory, ".onboarding-bootstrap-staging");
+      const before = await lstat(stage, { bigint: true });
+      const digest = createHash("sha256")
+        .update(await readFile(stage))
+        .digest("hex");
+      if (sequence < 6) assert.equal(before.size, 0n);
+      else assert.ok(before.size > 0n);
+      if (sequence < 7)
+        await assert.rejects(lstat(join(directory, "guard-client-key")), { code: "ENOENT" });
+      else
+        assert.equal(
+          (await lstat(join(directory, "guard-client-key"), { bigint: true })).ino,
+          before.ino,
+        );
+      refused(await run(home));
+      assert.equal((await lstat(stage, { bigint: true })).ino, before.ino);
+      assert.equal(
+        createHash("sha256")
+          .update(await readFile(stage))
+          .digest("hex"),
+        digest,
+      );
+    });
+  }
+
+  test("bootstrap publishes one native identity, survives SDK restart and refuses replacement", async (t) => {
     const home = await createFixture();
+    const start = performance.now();
     const first = await run(home);
+    t.diagnostic(
+      `Cold bootstrap subprocess ${Math.round(performance.now() - start)}ms; bootstrap function ${first.elapsedMs}ms. Local fixture only.`,
+    );
     assert.equal(first.failed, false);
     assert.equal(first.generated, 1);
     assert.equal(first.secretWrites, 1);

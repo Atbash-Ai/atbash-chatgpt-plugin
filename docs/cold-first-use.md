@@ -154,3 +154,21 @@ observed exactly one helper and all eight requests. This remains a local combine
 fixture duration, not an installed onboarding benchmark. Protocol, exit-order,
 timeout and interruption verification are still in progress; the full original
 crash/I/O/drift matrix and final reviews are required before integration.
+
+The helper invalidates the session on the process `exit` event, before waiting
+for its pipes to close. Buffered replies cannot authorize another operation after
+an observed exit. Termination is idempotent, signaling errors remain generic, and
+finish/dispose share one cleanup deadline. The lifecycle regressions reproduce
+acceptance of buffered replies and repeated cleanup budgets before these fixes.
+
+Real-helper termination tests cover all five verification points: before
+generation, before writing, before publication, after publication and after SDK
+readback. Each refuses readiness, confirms helper closure and preserves any
+staged/published identity without generating a replacement on retry. These tests
+do not replace the remaining parent-process crash, partial-write, filesystem
+substitution and store/environment drift matrix.
+
+One subsequent local sample measured 3.284 seconds for a cold bootstrap subprocess
+(including Node/module startup), of which 1.231 seconds was inside the bootstrap
+function including helper startup and shutdown. This sample is not live enrollment
+or an installed-runtime benchmark and does not establish a latency guarantee.
