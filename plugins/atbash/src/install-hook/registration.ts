@@ -36,23 +36,34 @@ export interface RegistrationReport {
   notes: string[];
 }
 
+/** Text from the hooks file is rendered into the transcript only when it reads as plain text: no
+ *  control characters and no format characters (bidi overrides, zero-width joiners and the like,
+ *  which make a planted line read as something else), and bounded in length. */
+const OPAQUE_TEXT = /[\p{Cc}\p{Cf}]/u;
+const SHOWN_PATH_MAX_LENGTH = 512;
+
 /** A value from the hooks file, rendered for a warning: a finite number or a short string as it
  *  is, anything longer or of another type by its shape only - the file is content the user (or,
  *  at project scope, a checked-out repository) controls, and a warning goes to the transcript. */
 function shape(value: unknown): string {
   if (typeof value === "number" && Number.isFinite(value)) return JSON.stringify(value);
   if (typeof value === "string") {
-    return value.length <= 32 && !/[\p{Cc}]/u.test(value)
+    return value.length <= 32 && !OPAQUE_TEXT.test(value)
       ? JSON.stringify(value)
       : `a string of ${value.length} characters`;
   }
   return `a ${value === null ? "null" : typeof value} value`;
 }
 
-/** A path from an own entry is this plugin's own (it named our script) and is shown; a path
- *  from a look-alike is somebody else's file content and is shown by length only. */
+/** A path from an own entry is this plugin's own (it named our script) and is shown, so the user
+ *  sees which file or interpreter went missing; a path from a look-alike is somebody else's file
+ *  content and is shown by length only. "Own" says only that the entry names our script - the
+ *  interpreter half of its command is whatever the hooks file says - so an own path still has to
+ *  read as plain text before it is echoed. */
 function shown(path: string, own: boolean): string {
-  return own ? path : `a path of ${path.length} characters`;
+  return own && path.length <= SHOWN_PATH_MAX_LENGTH && !OPAQUE_TEXT.test(path)
+    ? path
+    : `a path of ${path.length} characters`;
 }
 
 export function inspectRegistration(
