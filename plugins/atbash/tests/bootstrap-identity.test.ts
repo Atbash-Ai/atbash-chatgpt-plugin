@@ -76,7 +76,25 @@ let encodedLength = 0;
 let publications = 0;
 let partialVerified = false;
 let faultInjected = false;
+let driftInjected = false;
 const boundaries = [];
+async function drift(phase) {
+  if (driftInjected) return;
+  for (const kind of ['config','legacy','environment-key','home']) {
+    if (mode !== 'drift-' + kind + '-' + phase) continue;
+    if (kind === 'config' || kind === 'legacy') {
+      const name = kind === 'config' ? 'config.json' : 'atbash-client-key';
+      await fs.writeFile(join(home,'.config','atbash',name), 'concurrent public marker', {flag:'wx'});
+    } else if (kind === 'environment-key') process.env.ATBASH_AGENT_KEY = '';
+    else {
+      const alternate = join(home,'drift-home');
+      await fs.mkdir(alternate);
+      process.env.HOME = alternate;
+    }
+    driftInjected = true;
+    boundaries.push(kind + '-' + phase);
+  }
+}
 function fault(boundary) {
   if (mode !== 'error-' + boundary || faultInjected) return;
   faultInjected = true;
@@ -108,10 +126,11 @@ for (const method of ['lstat', 'realpath', 'link', 'open']) {
     }
     if (method === 'link') { checkpoint('before-link'); fault('before-link'); }
     const result = await original(...args);
-    if (method === 'link') { publications++; checkpoint('after-link'); }
+    if (method === 'link') { publications++; checkpoint('after-link'); await drift('after-publication'); }
     if (method === 'open' && basename(String(args[0])) === '.onboarding-bootstrap-claim') checkpoint('claim');
     if (method === 'open' && basename(String(args[0])) === '.onboarding-bootstrap-staging') {
       checkpoint('empty-stage');
+      await drift('before-generation');
       if (mode === 'config-drift-before-generation') {
         await fs.writeFile(join(home,'.config','atbash','config.json'), 'concurrent public marker', {flag:'wx'});
         boundaries.push('config-inserted');
@@ -142,6 +161,7 @@ for (const method of ['lstat', 'realpath', 'link', 'open']) {
           const outcome = await operation(...values);
           checkpoint(boundary);
           if (method === 'close') fault('after-close');
+          if (method === 'close') await drift('before-publication');
           return outcome;
         };
       }
@@ -659,6 +679,90 @@ if (process.platform === "win32") {
       assert.deepEqual((await readdir(directory)).sort(), names);
       assert.deepEqual(await snapshot(), before);
     });
+  }
+
+  for (const kind of ["config", "legacy", "environment-key", "home"]) {
+    for (const phase of ["before-generation", "before-publication", "after-publication"]) {
+      test(`bootstrap ${kind} drift ${phase} preserves evidence and refuses readiness`, async () => {
+        const home = await createFixture();
+        const result = await run(home, `drift-${kind}-${phase}`);
+        const generated = phase === "before-generation" ? 0 : 1;
+        const published = phase === "after-publication";
+        assert.deepEqual(result.boundaries, [`${kind}-${phase}`]);
+        assert.equal(result.failed, true);
+        assert.equal(result.result, undefined);
+        assert.equal(
+          result.message,
+          "Local identity setup could not safely finish. Existing files were preserved.",
+        );
+        assert.equal(result.generated, generated);
+        assert.equal(result.secretWrites, generated);
+        assert.equal(result.publications, published ? 1 : 0);
+        assert.equal(result.helperCount, 1);
+        assert.equal(result.helpersClosed, true);
+        const directory = join(home, ".config", "atbash");
+        const injected =
+          kind === "config" ? "config.json" : kind === "legacy" ? "atbash-client-key" : undefined;
+        const names = [
+          ".onboarding-bootstrap-claim",
+          ".onboarding-bootstrap-staging",
+          ...(published ? ["guard-client-key"] : []),
+          ...(injected ? [injected] : []),
+        ].sort();
+        assert.deepEqual((await readdir(directory)).sort(), names);
+        if (injected)
+          assert.equal(
+            await readFile(join(directory, injected), "utf8"),
+            "concurrent public marker",
+          );
+        if (kind === "home") assert.deepEqual(await readdir(join(home, "drift-home")), []);
+        const snapshot = async () =>
+          Promise.all(
+            names.map(async (name) => {
+              const file = join(directory, name);
+              const stats = await lstat(file, { bigint: true });
+              assert.equal(stats.isFile(), true);
+              assert.equal(stats.isSymbolicLink(), false);
+              return {
+                name,
+                ino: stats.ino,
+                dev: stats.dev,
+                nlink: stats.nlink,
+                size: stats.size,
+                hash: createHash("sha256")
+                  .update(await readFile(file))
+                  .digest("hex"),
+              };
+            }),
+          );
+        const before = await snapshot();
+        const claim = before.find((file) => file.name === ".onboarding-bootstrap-claim")!;
+        const stage = before.find((file) => file.name === ".onboarding-bootstrap-staging")!;
+        assert.equal(claim.nlink, 1n);
+        assert.equal(claim.size, 0n);
+        assert.equal(stage.nlink, published ? 2n : 1n);
+        assert.equal(stage.size, BigInt(result.writtenBytes));
+        if (generated) {
+          assert.ok(stage.size > 0n);
+          assert.equal(result.writtenBytes, result.encodedLength);
+        } else assert.equal(stage.size, 0n);
+        if (published) {
+          const canonical = before.find((file) => file.name === "guard-client-key")!;
+          assert.equal(canonical.ino, stage.ino);
+          assert.equal(canonical.dev, stage.dev);
+          assert.equal(canonical.nlink, 2n);
+          const restart = await run(home, "read");
+          assert.equal(restart.failed, false);
+          assert.equal(restart.generated, 0);
+          assert.equal(restart.result?.pubkey, result.generatedPubkey);
+        } else await assert.rejects(lstat(join(directory, "guard-client-key")), { code: "ENOENT" });
+        // A new child uses original HOME and no injected environment key.
+        refused(await run(home));
+        assert.deepEqual((await readdir(directory)).sort(), names);
+        assert.deepEqual(await snapshot(), before);
+        if (kind === "home") assert.deepEqual(await readdir(join(home, "drift-home")), []);
+      });
+    }
   }
 
   test("bootstrap publishes one native identity, survives SDK restart and refuses replacement", async (t) => {

@@ -201,3 +201,13 @@ publication, a separate uninjected SDK process must still load the original
 identity. These six cases and the ordinary success control passed together.
 Injected I/O exceptions prove application error handling, not physical disk
 failure or crash durability. Full validation and live onboarding remain pending.
+
+The drift matrix changes each of four inputs after stage creation, after stage
+close, and after publication: a newly inserted config.json, a legacy identity
+file, presence of an empty environment key, or HOME pointing to a fresh empty
+fixture directory. All twelve cases refuse readiness at the expected generation,
+write and publication counts. Injected public stores and existing identities stay
+unchanged across a clean-environment retry; the alternate HOME receives no files.
+Published identities remain readable through explicit-path SDK loading even when
+the injected config is malformed. The twelve cases and a success control passed.
+This verifies observed drift refusal, not atomic exclusion of all same-user races.
