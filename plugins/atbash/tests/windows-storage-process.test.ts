@@ -1,11 +1,74 @@
 import assert from "node:assert/strict";
 import childProcess from "node:child_process";
+import { writeFile } from "node:fs/promises";
 import { syncBuiltinESMExports } from "node:module";
 import { join } from "node:path";
 import test from "node:test";
-import { preparePrivateWindowsDirectory } from "../src/atbash/windows-storage-security.js";
+import {
+  preparePrivateWindowsDirectory,
+  verifyPrivateWindowsStorage,
+} from "../src/atbash/windows-storage-security.js";
+import { createFixture } from "./windows-acl-fixture.js";
 
 if (process.platform === "win32") {
+  test("Windows bootstrap batch helper enforces the real bounded request protocol", async (t) => {
+    const fixture = await createFixture();
+    const directory = join(fixture, "private");
+    preparePrivateWindowsDirectory(directory);
+    const file = join(directory, "marker");
+    await writeFile(file, "public fixture");
+    const originalSpawn = childProcess.spawnSync;
+    let captured: string[] = [];
+    const stub = t.mock.method(childProcess, "spawnSync", (_executable: string, args: string[]) => {
+      captured = args;
+      return { status: 0, stdout: '{"ok":true}', stderr: "" };
+    });
+    syncBuiltinESMExports();
+    try {
+      verifyPrivateWindowsStorage(directory, [file]);
+    } finally {
+      stub.mock.restore();
+      syncBuiltinESMExports();
+    }
+    assert.equal(captured.length, 5);
+    const valid = { operation: "verify-storage", path: directory, files: [file] };
+    const run = (request: unknown) =>
+      originalSpawn(
+        join(process.env.SystemRoot!, "System32", "WindowsPowerShell", "v1.0", "powershell.exe"),
+        captured,
+        {
+          input: JSON.stringify(request),
+          encoding: "utf8",
+          windowsHide: true,
+          shell: false,
+          timeout: 20_000,
+          maxBuffer: 4096,
+        },
+      );
+    const positive = run(valid);
+    assert.equal(positive.status, 0);
+    assert.equal(positive.stdout, '{"ok":true}');
+    for (const request of [
+      null,
+      [],
+      { ...valid, extra: true },
+      { ...valid, operation: ["verify-storage"] },
+      { ...valid, operation: "VERIFY-STORAGE" },
+      { ...valid, operation: `verify-${String.fromCharCode(0xad)}storage` },
+      { operation: valid.operation, Path: directory, files: [file] },
+      {
+        operation: valid.operation,
+        [`pa${String.fromCharCode(0xad)}th`]: directory,
+        files: [file],
+      },
+    ]) {
+      const result = run(request);
+      assert.equal(result.error, undefined);
+      assert.equal(result.status, 1);
+      assert.equal(result.stderr, "");
+      assert.match(result.stdout, /^\{"ok":false,"code":"(?:path|operation|internal)"\}$/);
+    }
+  });
   test("Windows bootstrap helper rejects every unsuccessful process response", (t) => {
     const success = {
       pid: 1,

@@ -92,8 +92,27 @@ readback and replacement refusal. Concurrency, crash interruption, metadata/ACL
 substitution and injected publication failures still need verification before
 integration. The initial success/restart/retry test took about 30 seconds on a
 loaded Windows host; this is a fixture duration, not an onboarding benchmark or
-achievement of the speed goal. Permission-helper launch overhead still needs
-measurement and reduction without removing boundary checks.
+achievement of the speed goal.
+
+Each of the five bootstrap boundaries now batches its directory and up to three
+files into one helper process. The helper checks ancestors before and after each
+file, and private directory permissions before and after the batch. The early
+claim check and every Node identity, size, link-count, environment and store check
+remain. No result is cached across generation, writing, publication or readback.
+
+Batch requests require unique immediate children with exact ordinal parent
+spelling. Unicode lookalike siblings, traversal, alternate streams, short-name
+spellings and textual aliases are refused. Intentional publication hardlinks
+remain valid; the bootstrap separately pins their identity and link count.
+PowerShell reads strict UTF-8 so Unicode profile paths preserve their spelling.
+The helper accepts only the bounded protocol and returns one all-or-nothing
+result. Permission checks remain observations, not an atomic filesystem snapshot.
+
+A single public-fixture comparison on the loaded development machine took
+3.64 seconds for four separate helper launches versus 1.06 seconds for one batch.
+This preliminary sample preceded ordinal path hardening and is not an onboarding
+benchmark. Installed runtime, registration, approval and host enforcement timing
+remain separate verification requirements.
 
 Bootstrap fixtures also clear inherited Node preload options before child startup.
 A harmless real preload is first proven executable, then required not to execute

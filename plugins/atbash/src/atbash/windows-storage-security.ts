@@ -9,23 +9,33 @@ $ProgressPreference = 'SilentlyContinue'
 try {
   [Console]::InputEncoding = [Text.UTF8Encoding]::new($false, $true)
   $request = [Console]::In.ReadToEnd() | ConvertFrom-Json
-  if ($request.operation -ceq 'verify-storage') {
+  $ordinal = [StringComparison]::Ordinal
+  if ($request.operation -isnot [string] -or
+      @(@('prepare-directory','verify-directory','verify-file','verify-storage') | Where-Object {
+        [string]::Equals($_, $request.operation, $ordinal)
+      }).Count -ne 1) { throw 'operation' }
+  if ([string]::Equals($request.operation, 'verify-storage', $ordinal)) {
     $names = @($request.PSObject.Properties.Name)
-    if ($names.Count -ne 3 -or @($names | Where-Object { $_ -cnotin @('operation','path','files') }).Count -ne 0 -or
+    if ($names.Count -ne 3 -or @($names | Where-Object {
+          -not ([string]::Equals($_, 'operation', $ordinal) -or
+                [string]::Equals($_, 'path', $ordinal) -or
+                [string]::Equals($_, 'files', $ordinal))
+        }).Count -ne 0 -or
         $request.path -isnot [string] -or $request.files -isnot [array] -or
         $request.files.Count -lt 1 -or $request.files.Count -gt 3) { throw 'path' }
     function CheckCanonical([string]$candidate) {
       if ($candidate -notmatch '^[A-Za-z]:\\' -or $candidate.Substring(2).Contains(':') -or
           $candidate -match '[/~]' -or $candidate -match '[. ](\\|$)' -or
-          $candidate -ine [IO.Path]::GetFullPath($candidate).TrimEnd('\')) { throw 'path' }
+          -not [string]::Equals($candidate, [IO.Path]::GetFullPath($candidate).TrimEnd('\'), $ordinal)) { throw 'path' }
     }
     CheckCanonical $request.path
-    $seen = @()
+    $seen = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
     foreach ($file in $request.files) {
       if ($file -isnot [string]) { throw 'path' }
       CheckCanonical $file
-      if ([IO.Path]::GetDirectoryName($file) -ine $request.path -or $seen -contains $file) { throw 'path' }
-      $seen += $file
+      # Exact parent spelling also works in case-sensitive NTFS directories.
+      if (-not [string]::Equals([IO.Path]::GetDirectoryName($file), $request.path, $ordinal) -or
+          -not $seen.Add($file)) { throw 'path' }
     }
   }
   $path = [string]$request.path
