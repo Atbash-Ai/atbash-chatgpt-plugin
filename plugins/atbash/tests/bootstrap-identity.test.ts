@@ -4,7 +4,7 @@ import { createHash } from "node:crypto";
 import { lstat, mkdir, readFile, readdir, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import test from "node:test";
-import { createFixture } from "./windows-acl-fixture.js";
+import { addFixtureGrant, createFixture, readFixtureDescriptor } from "./windows-acl-fixture.js";
 
 // Only this disposable child changes resolver inputs. Production has no test
 // root override or callbacks, and the parent's personal SDK root is never used.
@@ -77,7 +77,41 @@ let publications = 0;
 let partialVerified = false;
 let faultInjected = false;
 let driftInjected = false;
+let replacementVerified = false;
+let replacementOriginal;
+let replacementFailure;
+let directoryObserved;
+let preClaimPinObserved;
 const boundaries = [];
+async function substitute(phase) {
+  if (replacementVerified) return;
+  for (const kind of ['claim','stage','directory']) {
+    const denialControl = kind === 'directory' && mode === 'rename-denied-' + phase;
+    if (mode !== 'replace-' + kind + '-' + phase && !denialControl) continue;
+    const directory = join(home,'.config','atbash');
+    const target = kind === 'directory' ? directory : join(directory, kind === 'claim' ? '.onboarding-bootstrap-claim' : '.onboarding-bootstrap-staging');
+    const backup = target + '.preserved';
+    const before = await fs.lstat(target, {bigint:true});
+    replacementOriginal = {ino:String(before.ino),dev:String(before.dev)};
+    try { await fs.rename(target, backup); }
+    catch (error) {
+      replacementFailure = {operation:'rename',code:['EPERM','EACCES','EBUSY','EEXIST','ENOENT'].includes(error.code) ? error.code : 'OTHER'};
+      if (denialControl && error.code === 'EPERM') {
+        boundaries.push('directory-rename-denied-' + phase);
+        return;
+      }
+      throw error;
+    }
+    if (kind === 'directory') await fs.mkdir(target);
+    else await fs.copyFile(backup, target);
+    const retained = await fs.lstat(backup, {bigint:true});
+    const replaced = await fs.lstat(target, {bigint:true});
+    replacementVerified = retained.ino === before.ino && retained.dev === before.dev &&
+      replaced.ino !== before.ino && retained.size === before.size;
+    replacementOriginal = {ino:String(before.ino),dev:String(before.dev)};
+    boundaries.push(kind + '-' + phase);
+  }
+}
 async function drift(phase) {
   if (driftInjected) return;
   for (const kind of ['config','legacy','environment-key','home']) {
@@ -114,6 +148,10 @@ for (const method of ['lstat', 'realpath', 'link', 'open']) {
   const original = fs[method];
   fs[method] = async (...args) => {
     storageCalls++;
+    if (method === 'open' && basename(String(args[0])) === '.onboarding-bootstrap-claim') {
+      preClaimPinObserved = directoryObserved;
+      await substitute('before-claim');
+    }
     if (method === 'open' && mode === 'concurrent' && basename(String(args[0])) === '.onboarding-bootstrap-claim') {
       boundaries.push('claim-ready');
       await new Promise((ready) => { process.once('message', ready); process.send('claim-ready'); });
@@ -126,11 +164,13 @@ for (const method of ['lstat', 'realpath', 'link', 'open']) {
     }
     if (method === 'link') { checkpoint('before-link'); fault('before-link'); }
     const result = await original(...args);
+    if (method === 'lstat' && String(args[0]) === join(home,'.config','atbash')) directoryObserved = {ino:String(result.ino),dev:String(result.dev)};
     if (method === 'link') { publications++; checkpoint('after-link'); await drift('after-publication'); }
     if (method === 'open' && basename(String(args[0])) === '.onboarding-bootstrap-claim') checkpoint('claim');
     if (method === 'open' && basename(String(args[0])) === '.onboarding-bootstrap-staging') {
       checkpoint('empty-stage');
       await drift('before-generation');
+      await substitute('before-generation');
       if (mode === 'config-drift-before-generation') {
         await fs.writeFile(join(home,'.config','atbash','config.json'), 'concurrent public marker', {flag:'wx'});
         boundaries.push('config-inserted');
@@ -162,6 +202,7 @@ for (const method of ['lstat', 'realpath', 'link', 'open']) {
           checkpoint(boundary);
           if (method === 'close') fault('after-close');
           if (method === 'close') await drift('before-publication');
+          if (method === 'close') await substitute('before-publication');
           return outcome;
         };
       }
@@ -170,6 +211,28 @@ for (const method of ['lstat', 'realpath', 'link', 'open']) {
   };
 }
 syncBuiltinESMExports();
+const {WindowsStorageSession} = await import(pathToFileURL(resolve('plugins/atbash/dist-tests/src/atbash/windows-storage-session.js')).href);
+const verifyStorage = WindowsStorageSession.prototype.verifyStorage;
+let verification = 0;
+WindowsStorageSession.prototype.verifyStorage = async function(...args) {
+  verification++;
+  const selected = mode === 'acl-before-generation' ? 1 : mode === 'acl-before-write' ? 2 : 0;
+  if (verification === selected) {
+    await new Promise((done, reject) => {
+      const timer = setTimeout(() => { process.removeListener('message', receive); reject(new Error('Fixture grant deadline')); }, 10_000);
+      function receive(message) {
+        clearTimeout(timer);
+        if (message !== 'acl-applied') reject(new Error('Unexpected fixture acknowledgement'));
+        else done();
+      }
+      process.once('message', receive);
+      process.send('acl-ready');
+    });
+    boundaries.push(mode);
+    process.disconnect();
+  }
+  return verifyStorage.apply(this,args);
+};
 const {bootstrapWindowsIdentity} = await import(pathToFileURL(resolve('plugins/atbash/dist-tests/src/atbash/bootstrap-identity.js')).href);
 let result;
 let failed = false;
@@ -184,7 +247,7 @@ try {
   else if (mode === 'override-path') result = await bootstrapWindowsIdentity({keyPath:''});
   else result = await bootstrapWindowsIdentity();
 } catch (error) { failed = true; message = error.message; }
-process.stdout.write(JSON.stringify({failed,message,result,generated,generatedPubkey,storageCalls,secretWrites,writtenBytes,encodedLength,partialVerified,publications,boundaries,helperCount:helpers.length,helpersClosed:helpers.every(h=>h.closed),helperRequests,elapsedMs:Math.round(performance.now()-started)}));
+process.stdout.write(JSON.stringify({failed,message,result,generated,generatedPubkey,storageCalls,secretWrites,writtenBytes,encodedLength,partialVerified,replacementVerified,replacementOriginal,replacementFailure,preClaimPinObserved,publications,boundaries,helperCount:helpers.length,helpersClosed:helpers.every(h=>h.closed),helperRequests,elapsedMs:Math.round(performance.now()-started)}));
 `;
 
 interface ChildResult {
@@ -199,6 +262,10 @@ interface ChildResult {
   encodedLength: number;
   partialVerified: boolean;
   generatedPubkey?: string;
+  replacementVerified: boolean;
+  replacementOriginal?: { ino: string; dev: string };
+  replacementFailure?: { operation: string; code: string };
+  preClaimPinObserved?: { ino: string; dev: string };
   boundaries: string[];
   helperCount: number;
   helpersClosed: boolean;
@@ -278,7 +345,14 @@ async function run(
     let stdout = "";
     let stderrBytes = 0;
     child.on("message", (message) => {
-      if (message === "claim-ready") onReady?.(child);
+      if (message === "claim-ready" || message === "acl-ready") {
+        try {
+          onReady?.(child);
+        } catch {
+          child.kill();
+          reject(new Error("Fixture checkpoint callback failed; raw output withheld."));
+        }
+      }
     });
     child.stdout!.on("data", (data: Buffer) => {
       stdout += data.toString("utf8");
@@ -332,6 +406,44 @@ function refused(result: ChildResult): void {
     result.message,
     "Local identity setup could not safely finish. Existing files were preserved.",
   );
+}
+
+async function snapshotFixture(home: string) {
+  const entries: {
+    path: string;
+    ino: bigint;
+    dev: bigint;
+    size: bigint;
+    nlink: bigint;
+    directory: boolean;
+    hash?: string;
+  }[] = [];
+  async function visit(relative: string): Promise<void> {
+    const path = join(home, relative);
+    const stats = await lstat(path, { bigint: true });
+    assert.equal(stats.isSymbolicLink(), false);
+    const directory = stats.isDirectory();
+    assert.ok(directory || stats.isFile());
+    entries.push({
+      path: relative,
+      ino: stats.ino,
+      dev: stats.dev,
+      size: stats.size,
+      nlink: stats.nlink,
+      directory,
+      ...(directory
+        ? {}
+        : {
+            hash: createHash("sha256")
+              .update(await readFile(path))
+              .digest("hex"),
+          }),
+    });
+    if (directory)
+      for (const name of (await readdir(path)).sort()) await visit(join(relative, name));
+  }
+  await visit("");
+  return entries;
 }
 
 if (process.platform === "win32") {
@@ -763,6 +875,183 @@ if (process.platform === "win32") {
         if (kind === "home") assert.deepEqual(await readdir(join(home, "drift-home")), []);
       });
     }
+  }
+
+  for (const kind of ["claim", "stage"]) {
+    for (const phase of ["before-generation", "before-publication"]) {
+      test(`bootstrap ${kind} replacement ${phase} refuses the changed fixture state`, async () => {
+        const home = await createFixture();
+        const result = await run(home, `replace-${kind}-${phase}`);
+        assert.equal(
+          result.replacementFailure,
+          undefined,
+          "Directory/file injection must actually complete",
+        );
+        const generated = phase === "before-generation" ? 0 : 1;
+        assert.deepEqual(result.boundaries, [`${kind}-${phase}`]);
+        assert.equal(result.replacementVerified, true);
+        assert.equal(result.failed, true);
+        assert.equal(result.result, undefined);
+        assert.equal(
+          result.message,
+          "Local identity setup could not safely finish. Existing files were preserved.",
+        );
+        assert.equal(result.generated, generated);
+        assert.equal(result.secretWrites, generated);
+        assert.equal(result.publications, 0);
+        assert.equal(result.helperCount, 1);
+        assert.equal(result.helpersClosed, true);
+        const directory = join(home, ".config", "atbash");
+        const target =
+          kind === "directory"
+            ? directory
+            : join(
+                directory,
+                kind === "claim" ? ".onboarding-bootstrap-claim" : ".onboarding-bootstrap-staging",
+              );
+        const retained = await lstat(target + ".preserved", { bigint: true });
+        const replacement = await lstat(target, { bigint: true });
+        assert.equal(String(retained.ino), result.replacementOriginal?.ino);
+        assert.equal(String(retained.dev), result.replacementOriginal?.dev);
+        assert.notEqual(replacement.ino, retained.ino);
+        if (kind !== "directory") {
+          assert.equal(
+            createHash("sha256")
+              .update(await readFile(target))
+              .digest("hex"),
+            createHash("sha256")
+              .update(await readFile(target + ".preserved"))
+              .digest("hex"),
+          );
+        } else assert.deepEqual(await readdir(directory), []);
+        const originalDirectory = kind === "directory" ? directory + ".preserved" : directory;
+        const stage = await lstat(join(originalDirectory, ".onboarding-bootstrap-staging"), {
+          bigint: true,
+        });
+        const claim = await lstat(join(originalDirectory, ".onboarding-bootstrap-claim"), {
+          bigint: true,
+        });
+        assert.equal(stage.size, BigInt(result.writtenBytes));
+        assert.equal(stage.nlink, 1n);
+        assert.equal(claim.size, 0n);
+        assert.equal(claim.nlink, 1n);
+        await assert.rejects(lstat(join(directory, "guard-client-key")), { code: "ENOENT" });
+        await assert.rejects(lstat(join(originalDirectory, "guard-client-key")), {
+          code: "ENOENT",
+        });
+        const before = await snapshotFixture(home);
+        refused(await run(home));
+        assert.deepEqual(await snapshotFixture(home), before);
+      });
+    }
+  }
+
+  for (const phase of ["before-generation", "before-publication"]) {
+    test(`bootstrap directory rename is refused by this Windows host ${phase} without disrupting creation`, async () => {
+      const home = await createFixture();
+      const result = await run(home, `rename-denied-${phase}`);
+      assert.deepEqual(result.boundaries, [`directory-rename-denied-${phase}`]);
+      assert.deepEqual(result.replacementFailure, { operation: "rename", code: "EPERM" });
+      assert.equal(result.replacementVerified, false);
+      assert.equal(result.failed, false);
+      assert.equal(result.result?.state, "created");
+      assert.equal(result.generated, 1);
+      assert.equal(result.secretWrites, 1);
+      assert.equal(result.publications, 1);
+      assert.equal(result.helpersClosed, true);
+      const directory = join(home, ".config", "atbash");
+      const retained = await lstat(directory, { bigint: true });
+      assert.equal(String(retained.ino), result.replacementOriginal?.ino);
+      assert.equal(String(retained.dev), result.replacementOriginal?.dev);
+      await assert.rejects(lstat(directory + ".preserved"), { code: "ENOENT" });
+      assert.deepEqual((await readdir(directory)).sort(), [
+        ".onboarding-bootstrap-claim",
+        ".onboarding-bootstrap-staging",
+        "guard-client-key",
+      ]);
+      const stage = await lstat(join(directory, ".onboarding-bootstrap-staging"), { bigint: true });
+      const published = await lstat(join(directory, "guard-client-key"), { bigint: true });
+      assert.equal(stage.ino, published.ino);
+      assert.equal(stage.dev, published.dev);
+      assert.equal(stage.nlink, 2n);
+      assert.equal(published.nlink, 2n);
+      const restart = await run(home, "read");
+      assert.equal(restart.failed, false);
+      assert.equal(restart.result?.pubkey, result.result?.pubkey);
+      const before = await snapshotFixture(home);
+      refused(await run(home));
+      assert.deepEqual(await snapshotFixture(home), before);
+    });
+  }
+
+  test("bootstrap actual directory replacement after pinning and before claim creation refuses readiness", async () => {
+    const home = await createFixture();
+    const result = await run(home, "replace-directory-before-claim");
+    assert.equal(result.replacementFailure, undefined);
+    assert.equal(result.replacementVerified, true);
+    assert.ok(result.preClaimPinObserved);
+    assert.deepEqual(result.preClaimPinObserved, result.replacementOriginal);
+    assert.deepEqual(result.boundaries, ["directory-before-claim"]);
+    refused(result);
+    assert.equal(result.helperCount, 1);
+    assert.equal(result.helpersClosed, true);
+    const directory = join(home, ".config", "atbash");
+    const original = await lstat(directory + ".preserved", { bigint: true });
+    const replacement = await lstat(directory, { bigint: true });
+    assert.equal(String(original.ino), result.replacementOriginal?.ino);
+    assert.equal(String(original.dev), result.replacementOriginal?.dev);
+    assert.notEqual(original.ino, replacement.ino);
+    assert.deepEqual(await readdir(directory + ".preserved"), []);
+    assert.deepEqual((await readdir(directory)).sort(), [
+      ".onboarding-bootstrap-claim",
+      ".onboarding-bootstrap-staging",
+    ]);
+    const before = await snapshotFixture(home);
+    refused(await run(home));
+    assert.deepEqual(await snapshotFixture(home), before);
+  });
+
+  for (const [mode, generated] of [
+    ["acl-before-generation", 0],
+    ["acl-before-write", 1],
+  ] as const) {
+    test(`bootstrap real ${mode} permission change refuses before secret writes`, async () => {
+      const home = await createFixture();
+      const stage = join(home, ".config", "atbash", ".onboarding-bootstrap-staging");
+      let changed = 0;
+      let descriptor = "";
+      const result = await run(home, mode, (child) => {
+        const before = readFixtureDescriptor(stage);
+        addFixtureGrant(stage, "S-1-1-0");
+        descriptor = readFixtureDescriptor(stage);
+        assert.notEqual(descriptor, before, "Real stored ACL must change before bootstrap resumes");
+        changed++;
+        child.send("acl-applied");
+      });
+      assert.equal(changed, 1);
+      assert.deepEqual(result.boundaries, [mode]);
+      assert.equal(result.failed, true);
+      assert.equal(result.result, undefined);
+      assert.equal(
+        result.message,
+        "Local identity setup could not safely finish. Existing files were preserved.",
+      );
+      assert.equal(result.generated, generated);
+      assert.equal(result.secretWrites, 0);
+      assert.equal(result.publications, 0);
+      assert.equal(result.helperCount, 1);
+      assert.equal(result.helpersClosed, true);
+      assert.equal((await lstat(stage)).size, 0);
+      assert.deepEqual((await readdir(join(home, ".config", "atbash"))).sort(), [
+        ".onboarding-bootstrap-claim",
+        ".onboarding-bootstrap-staging",
+      ]);
+      assert.equal(readFixtureDescriptor(stage), descriptor);
+      const before = await snapshotFixture(home);
+      refused(await run(home));
+      assert.deepEqual(await snapshotFixture(home), before);
+      assert.equal(readFixtureDescriptor(stage), descriptor);
+    });
   }
 
   test("bootstrap publishes one native identity, survives SDK restart and refuses replacement", async (t) => {

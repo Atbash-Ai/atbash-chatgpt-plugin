@@ -211,3 +211,25 @@ unchanged across a clean-environment retry; the alternate HOME receives no files
 Published identities remain readable through explicit-path SDK loading even when
 the injected config is malformed. The twelve cases and a success control passed.
 This verifies observed drift refusal, not atomic exclusion of all same-user races.
+
+Replacement coverage uses real rename/copy operations for claim and stage files
+before generation and before publication. Originals remain in private fixture
+backup paths. A separate real directory replacement occurs after its identity is
+observed but before claim creation; production checks refuse the changed state.
+Because the replacement directory has inherited permissions, this case does not
+independently isolate inode checking from ACL validation.
+
+Two initially attempted later directory substitutions could not execute: this
+Windows host returned EPERM while bootstrap handles were open. Their failed
+diagnostic reports are retained. Two explicitly named OS-refusal controls instead
+require that denial, an unchanged directory and no backup, then allow the real
+bootstrap to succeed. They are not successful substitutions or a claim of
+universal Windows protection. No production handle is closed to force a mutation.
+
+Two real ACL changes pause immediately before the first or second storage check.
+The fixture parent adds an actual Everyone grant to the empty stage, confirms the
+stored descriptor changed, then lets the original PowerShell check run. Refusal
+must occur with zero secret writes and preserve the descriptor through retry.
+All nine replacement/OS/ACL cases and the success control passed together.
+Replacing an entire store with a new secure empty directory by an arbitrary
+same-user actor remains outside the cooperative claim's trust guarantee.
