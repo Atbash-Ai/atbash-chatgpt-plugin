@@ -86,16 +86,16 @@ onboarding and recovery remain separate work. This cooperative claim cannot
 atomically exclude older SDKs or other same-user processes writing another store;
 observed drift refuses success and never deletes either identity.
 
-The first focused cases cover import behavior, blank environment/override inputs,
-HOME mismatch, empty/malformed existing stores, native creation, SDK restart
-readback and replacement refusal. Concurrency, crash interruption, metadata/ACL
-substitution and injected publication failures still need verification before
-integration. The initial success/restart/retry test took about 30 seconds on a
-loaded Windows host; this is a fixture duration, not an onboarding benchmark or
-achievement of the speed goal.
+Focused cases cover import behavior, blank environment/override inputs, HOME
+mismatch, empty/malformed existing stores, native creation, SDK restart readback,
+concurrency, crashes, drift, substitution and error handling as detailed below.
+Aggregate verification at the final commit across all required configurations
+and final reviews remain necessary before integration. The initial
+success/restart/retry test took about 30 seconds on a loaded Windows host; later
+samples below reflect the helper optimization, not a live onboarding guarantee.
 
-Each of the five bootstrap boundaries now batches its directory and up to three
-files into one helper process. The helper checks ancestors before and after each
+Each of the five bootstrap boundaries batches its directory and up to three
+files into one helper request. The helper checks ancestors before and after each
 file, and private directory permissions before and after the batch. The early
 claim check and every Node identity, size, link-count, environment and store check
 remain. No result is cached across generation, writing, publication or readback.
@@ -152,8 +152,8 @@ on all failure paths.
 The first real create/restart/refused-retry fixture completed in 5.67 seconds and
 observed exactly one helper and all eight requests. This remains a local combined
 fixture duration, not an installed onboarding benchmark. Protocol, exit-order,
-timeout and interruption verification are still in progress; the full original
-crash/I/O/drift matrix and final reviews are required before integration.
+timeout and interruption checks have passed; their aggregate final-commit
+verification and final reviews are required before integration.
 
 The helper invalidates the session on the process `exit` event, before waiting
 for its pipes to close. Buffered replies cannot authorize another operation after
@@ -165,8 +165,8 @@ Real-helper termination tests cover all five verification points: before
 generation, before writing, before publication, after publication and after SDK
 readback. Each refuses readiness, confirms helper closure and preserves any
 staged/published identity without generating a replacement on retry. These tests
-do not replace the remaining parent-process crash, partial-write, filesystem
-substitution and store/environment drift matrix.
+do not replace the separate parent-process crash, partial-write, filesystem
+substitution and store/environment drift cases documented below.
 
 One subsequent local sample measured 3.284 seconds for a cold bootstrap subprocess
 (including Node/module startup), of which 1.231 seconds was inside the bootstrap
@@ -187,8 +187,8 @@ The helper PID probe observes process existence only and does not terminate it.
 
 The ten crash cases and the existing native success/restart/refused-retry control
 passed together (11 executed, zero failures or skips). This is focused evidence;
-the remaining I/O exceptions, substitution/drift cases, full-suite verification
-and live enrollment are still required. No onboarding CLI, installed hook or
+the separate I/O exceptions and substitution/drift cases do not establish
+full-suite verification or live enrollment. No onboarding CLI, installed hook or
 personal identity is changed by these tests.
 
 Six injected error cases now cover an actual verified partial write followed by
@@ -233,3 +233,15 @@ must occur with zero secret writes and preserve the descriptor through retry.
 All nine replacement/OS/ACL cases and the success control passed together.
 Replacing an entire store with a new secure empty directory by an arbitrary
 same-user actor remains outside the cooperative claim's trust guarantee.
+
+Four additional cases create real unexpected hard links to the claim or stage
+before generation or before publication. They prove both paths reference the
+same unchanged file with two links, then require refusal and preservation across
+retry. The extra links stay in private fixture storage, including post-write
+stage cases. The four cases and the ordinary successful two-link publication
+control passed together. Extra links and backup files are retained, never removed.
+
+Remaining delivery gates are aggregate exact-commit review, refreshed negative
+proofs for production fixes, the full testing/development/production pipeline,
+and actual CLI/dashboard/installed-hook integration and enrollment verification.
+The internal bootstrap alone does not satisfy the live onboarding objective.

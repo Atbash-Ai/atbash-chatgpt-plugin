@@ -10,6 +10,7 @@ import { addFixtureGrant, createFixture, readFixtureDescriptor } from "./windows
 // root override or callbacks, and the parent's personal SDK root is never used.
 const CHILD = String.raw`
 import childProcess from 'node:child_process';
+import {createHash} from 'node:crypto';
 import {writeFileSync} from 'node:fs';
 import os from 'node:os';
 import fs from 'node:fs/promises';
@@ -82,7 +83,26 @@ let replacementOriginal;
 let replacementFailure;
 let directoryObserved;
 let preClaimPinObserved;
+let hardlinkVerified = false;
+const linkFixture = fs.link.bind(fs);
 const boundaries = [];
+async function extraLink(phase) {
+  if (hardlinkVerified) return;
+  for (const kind of ['claim','stage']) {
+    if (mode !== 'extra-link-' + kind + '-' + phase) continue;
+    const directory = join(home,'.config','atbash');
+    const target = join(directory,kind === 'claim' ? '.onboarding-bootstrap-claim' : '.onboarding-bootstrap-staging');
+    const extra = join(directory,'.onboarding-extra-' + kind);
+    const before = createHash('sha256').update(await fs.readFile(target)).digest('hex');
+    await linkFixture(target,extra);
+    const original = await fs.lstat(target,{bigint:true});
+    const linked = await fs.lstat(extra,{bigint:true});
+    hardlinkVerified = original.isFile() && linked.isFile() && original.ino === linked.ino &&
+      original.dev === linked.dev && original.nlink === 2n && linked.nlink === 2n &&
+      before === createHash('sha256').update(await fs.readFile(target)).digest('hex');
+    boundaries.push(kind + '-' + phase);
+  }
+}
 async function substitute(phase) {
   if (replacementVerified) return;
   for (const kind of ['claim','stage','directory']) {
@@ -171,6 +191,7 @@ for (const method of ['lstat', 'realpath', 'link', 'open']) {
       checkpoint('empty-stage');
       await drift('before-generation');
       await substitute('before-generation');
+      await extraLink('before-generation');
       if (mode === 'config-drift-before-generation') {
         await fs.writeFile(join(home,'.config','atbash','config.json'), 'concurrent public marker', {flag:'wx'});
         boundaries.push('config-inserted');
@@ -203,6 +224,7 @@ for (const method of ['lstat', 'realpath', 'link', 'open']) {
           if (method === 'close') fault('after-close');
           if (method === 'close') await drift('before-publication');
           if (method === 'close') await substitute('before-publication');
+          if (method === 'close') await extraLink('before-publication');
           return outcome;
         };
       }
@@ -247,7 +269,7 @@ try {
   else if (mode === 'override-path') result = await bootstrapWindowsIdentity({keyPath:''});
   else result = await bootstrapWindowsIdentity();
 } catch (error) { failed = true; message = error.message; }
-process.stdout.write(JSON.stringify({failed,message,result,generated,generatedPubkey,storageCalls,secretWrites,writtenBytes,encodedLength,partialVerified,replacementVerified,replacementOriginal,replacementFailure,preClaimPinObserved,publications,boundaries,helperCount:helpers.length,helpersClosed:helpers.every(h=>h.closed),helperRequests,elapsedMs:Math.round(performance.now()-started)}));
+process.stdout.write(JSON.stringify({failed,message,result,generated,generatedPubkey,storageCalls,secretWrites,writtenBytes,encodedLength,partialVerified,replacementVerified,replacementOriginal,replacementFailure,preClaimPinObserved,hardlinkVerified,publications,boundaries,helperCount:helpers.length,helpersClosed:helpers.every(h=>h.closed),helperRequests,elapsedMs:Math.round(performance.now()-started)}));
 `;
 
 interface ChildResult {
@@ -266,6 +288,7 @@ interface ChildResult {
   replacementOriginal?: { ino: string; dev: string };
   replacementFailure?: { operation: string; code: string };
   preClaimPinObserved?: { ino: string; dev: string };
+  hardlinkVerified: boolean;
   boundaries: string[];
   helperCount: number;
   helpersClosed: boolean;
@@ -1052,6 +1075,65 @@ if (process.platform === "win32") {
       assert.deepEqual(await snapshotFixture(home), before);
       assert.equal(readFixtureDescriptor(stage), descriptor);
     });
+  }
+
+  for (const kind of ["claim", "stage"]) {
+    for (const phase of ["before-generation", "before-publication"]) {
+      test(`bootstrap extra ${kind} hardlink ${phase} refuses unexpected link count`, async () => {
+        const home = await createFixture();
+        const result = await run(home, `extra-link-${kind}-${phase}`);
+        const generated = phase === "before-generation" ? 0 : 1;
+        assert.deepEqual(result.boundaries, [`${kind}-${phase}`]);
+        assert.equal(result.hardlinkVerified, true);
+        assert.equal(result.failed, true);
+        assert.equal(result.result, undefined);
+        assert.equal(
+          result.message,
+          "Local identity setup could not safely finish. Existing files were preserved.",
+        );
+        assert.equal(result.generated, generated);
+        assert.equal(result.secretWrites, generated);
+        assert.equal(result.publications, 0);
+        assert.equal(result.helperCount, 1);
+        assert.equal(result.helpersClosed, true);
+        const directory = join(home, ".config", "atbash");
+        assert.deepEqual((await readdir(directory)).sort(), [
+          ".onboarding-bootstrap-claim",
+          ".onboarding-bootstrap-staging",
+          `.onboarding-extra-${kind}`,
+        ]);
+        const target = join(
+          directory,
+          kind === "claim" ? ".onboarding-bootstrap-claim" : ".onboarding-bootstrap-staging",
+        );
+        const extra = join(directory, `.onboarding-extra-${kind}`);
+        const original = await lstat(target, { bigint: true });
+        const linked = await lstat(extra, { bigint: true });
+        assert.equal(original.ino, linked.ino);
+        assert.equal(original.dev, linked.dev);
+        assert.equal(original.nlink, 2n);
+        assert.equal(linked.nlink, 2n);
+        assert.equal(
+          createHash("sha256")
+            .update(await readFile(target))
+            .digest("hex"),
+          createHash("sha256")
+            .update(await readFile(extra))
+            .digest("hex"),
+        );
+        const stage = await lstat(join(directory, ".onboarding-bootstrap-staging"), {
+          bigint: true,
+        });
+        const claim = await lstat(join(directory, ".onboarding-bootstrap-claim"), { bigint: true });
+        assert.equal(stage.size, BigInt(result.writtenBytes));
+        assert.equal(claim.size, 0n);
+        assert.equal(stage.nlink, kind === "stage" ? 2n : 1n);
+        assert.equal(claim.nlink, kind === "claim" ? 2n : 1n);
+        const before = await snapshotFixture(home);
+        refused(await run(home));
+        assert.deepEqual(await snapshotFixture(home), before);
+      });
+    }
   }
 
   test("bootstrap publishes one native identity, survives SDK restart and refuses replacement", async (t) => {
