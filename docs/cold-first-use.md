@@ -40,6 +40,27 @@ whose actual ancestors pass the same checks. They do not repair those ancestors
 or access the user's SDK configuration. Successful fixture checks are not proof
 that an arbitrary real configuration directory is safe.
 
+Permission fixtures replace their DACL with inheritance disabled. Otherwise
+Windows can reapply the parent's FullControl grant and invalidate a negative
+test's premise. Actual descriptor readback verifies the persisted state; refusal
+checks retain the descriptor and public marker bytes. Junction tests also verify
+that neither the junction nor its target is changed.
+
+The Windows filesystem/.NET ACL path normalizes the tested unknown-mask and
+audit-flag entries into an ordinary FullControl grant. Tests assert that actual
+readback instead of claiming those malformed entries survived on disk. Separate
+synthetic-descriptor tests run the production raw-rule classifier in PowerShell
+and require rejection of the original unsupported forms, with a valid-rule
+positive control. These synthetic cases do not substitute for the real NTFS
+permission, inheritance, callback and junction tests. Process-boundary tests
+additionally cover timeouts, spawn/output errors and nonzero exits without
+starting PowerShell or touching storage.
+
+CI runs the full verification and committed marketplace-runtime checks on both
+Linux and Windows, using immutable action commit references. Submission packaging
+and artifact upload remain Linux-only. Local Windows results do not establish that
+the hosted Windows job has passed; its actual run is a separate delivery gate.
+
 ## Remaining bootstrap and onboarding work
 
 Before this helper is integrated, bootstrap still needs strict absence checks for

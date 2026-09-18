@@ -1,77 +1,116 @@
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
-import { mkdtemp, mkdir, open, readFile, stat, writeFile } from "node:fs/promises";
-import { join, resolve, sep } from "node:path";
-import { homedir } from "node:os";
+import { lstat, mkdir, open, readFile, stat, symlink, writeFile } from "node:fs/promises";
+import { join } from "node:path";
 import test from "node:test";
+import {
+  createFixture,
+  addFixtureGrant,
+  setFixtureDescriptor,
+  readFixtureDescriptor,
+  type DescriptorCase,
+} from "./windows-acl-fixture.js";
 import {
   preparePrivateWindowsDirectory,
   verifyPrivateWindowsFile,
 } from "../src/atbash/windows-storage-security.js";
 
 const TRUSTED_INSTALLER = "S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464";
-const fixtureRoots = new Set<string>();
-
-async function createFixture() {
-  // TEMP and this host's workspace have additional replacement-capable ACEs.
-  // Fresh profile fixtures exercise the same checks without changing those ACLs.
-  // This is never the actual SDK configuration directory.
-  const root = await mkdtemp(join(homedir(), ".atbash-bootstrap-fixture-"));
-  fixtureRoots.add(resolve(root));
-  return root;
-}
-
-function addFixtureGrant(path: string, sid: string): void {
-  const target = resolve(path);
-  assert.ok(
-    [...fixtureRoots].some((root) => target.startsWith(root + sep)),
-    "ACL mutation stays inside a newly owned fixture",
-  );
-  assert.ok(sid === "callback-self" || /^S-[0-9-]+$/.test(sid));
-  const script = String.raw`
-$ErrorActionPreference = 'Stop'
-$ProgressPreference = 'SilentlyContinue'
-$request = [Console]::In.ReadToEnd() | ConvertFrom-Json
-$directory = [bool]([IO.File]::GetAttributes($request.path) -band [IO.FileAttributes]::Directory)
-$acl = if ($directory) { [IO.Directory]::GetAccessControl($request.path) } else { [IO.File]::GetAccessControl($request.path) }
-if ($request.sid -eq 'callback-self') {
-  $sid = [Security.Principal.WindowsIdentity]::GetCurrent().User
-  $raw = [Security.AccessControl.RawSecurityDescriptor]::new($acl.GetSecurityDescriptorBinaryForm(), 0)
-  $raw.DiscretionaryAcl = [Security.AccessControl.RawAcl]::new(2, 2)
-  $raw.DiscretionaryAcl.InsertAce(0, [Security.AccessControl.CommonAce]::new('None', 'AccessAllowed', [int][Security.AccessControl.FileSystemRights]::Read, $sid, $false, $null))
-  $raw.DiscretionaryAcl.InsertAce(1, [Security.AccessControl.CommonAce]::new('None', 'AccessAllowed', [int][Security.AccessControl.FileSystemRights]::FullControl, $sid, $true, [byte[]]@()))
-  $bytes = New-Object byte[] $raw.BinaryLength
-  $raw.GetBinaryForm($bytes, 0)
-  $acl.SetSecurityDescriptorBinaryForm($bytes, [Security.AccessControl.AccessControlSections]::Access)
-} else {
-  $sid = [Security.Principal.SecurityIdentifier]::new([string]$request.sid)
-  $acl.AddAccessRule([Security.AccessControl.FileSystemAccessRule]::new($sid, 'FullControl', 'Allow'))
-}
-if ($directory) { [IO.Directory]::SetAccessControl($request.path, $acl) } else { [IO.File]::SetAccessControl($request.path, $acl) }
-`;
-  const result = spawnSync(
-    join(process.env.SystemRoot!, "System32", "WindowsPowerShell", "v1.0", "powershell.exe"),
-    [
-      "-NoLogo",
-      "-NoProfile",
-      "-NonInteractive",
-      "-EncodedCommand",
-      Buffer.from(script, "utf16le").toString("base64"),
-    ],
-    {
-      input: JSON.stringify({ path: target, sid }),
-      encoding: "utf8",
-      windowsHide: true,
-      shell: false,
-      timeout: 20_000,
-      maxBuffer: 4096,
-    },
-  );
-  assert.equal(result.error, undefined);
-  assert.equal(result.status, 0, `Fixture ACL grant must execute successfully: ${result.stderr}`);
-}
-
 if (process.platform === "win32") {
+  const refusedDescriptors: DescriptorCase[] = [
+    "object",
+    "null",
+    "empty",
+    "read",
+    "inherit-only",
+    "generic-read",
+    "generic-write",
+    "generic-execute",
+  ];
+  for (const descriptor of refusedDescriptors) {
+    test(`Windows bootstrap ACL: ${descriptor} descriptor cannot establish private storage`, async () => {
+      const fixture = await createFixture();
+      const directory = join(fixture, "private");
+      preparePrivateWindowsDirectory(directory);
+      const file = join(directory, "marker");
+      const handle = await open(file, "wx+");
+      try {
+        await handle.writeFile("public fixture");
+        const before = setFixtureDescriptor(file, descriptor);
+        assert.throws(() => verifyPrivateWindowsFile(file), /cannot be verified/);
+        assert.equal(
+          readFixtureDescriptor(file),
+          before,
+          "Refusal must preserve the actual descriptor",
+        );
+        const contents = Buffer.alloc(14);
+        assert.equal(
+          (await handle.read(contents, 0, contents.length, 0)).bytesRead,
+          contents.length,
+        );
+        assert.equal(contents.toString(), "public fixture");
+      } finally {
+        await handle.close();
+      }
+    });
+  }
+
+  for (const descriptor of ["unknown-mask", "audit-flags"] as const) {
+    test(`Windows bootstrap ACL: filesystem normalizes ${descriptor} before readback`, async () => {
+      const fixture = await createFixture();
+      const directory = join(fixture, "private");
+      preparePrivateWindowsDirectory(directory);
+      const file = join(directory, "marker");
+      await writeFile(file, "public fixture");
+      const before = setFixtureDescriptor(file, descriptor);
+      const bytes = Buffer.from(before, "base64");
+      const dacl = bytes.readUInt32LE(16);
+      assert.ok(dacl > 0);
+      assert.equal(bytes.readUInt16LE(dacl + 4), 1, "Persisted DACL has one normalized ACE");
+      assert.equal(bytes[dacl + 8], 0, "Persisted ACE is an ordinary allow");
+      assert.equal(bytes[dacl + 9], 0, "Unsupported flags did not survive persistence");
+      assert.equal(
+        bytes.readUInt32LE(dacl + 12),
+        2032127,
+        "Unsupported mask bits did not survive persistence",
+      );
+      verifyPrivateWindowsFile(file);
+      assert.equal(readFixtureDescriptor(file), before);
+      assert.equal(await readFile(file, "utf8"), "public fixture");
+    });
+  }
+
+  test("Windows bootstrap ACL: leaf and ancestor junctions refuse without changing their targets", async () => {
+    const fixture = await createFixture();
+    const target = join(fixture, "target");
+    preparePrivateWindowsDirectory(target);
+    const marker = join(target, "marker");
+    await writeFile(marker, "public fixture");
+    const before = readFixtureDescriptor(target);
+    const junction = join(fixture, "junction");
+    await symlink(target, junction, "junction");
+    assert.throws(() => preparePrivateWindowsDirectory(junction), /cannot be verified/);
+    assert.throws(() => verifyPrivateWindowsFile(join(junction, "marker")), /cannot be verified/);
+    assert.throws(
+      () => preparePrivateWindowsDirectory(join(junction, "child")),
+      /cannot be verified/,
+    );
+    assert.equal((await lstat(junction)).isSymbolicLink(), true);
+    assert.equal(readFixtureDescriptor(target), before);
+    assert.equal(await readFile(marker, "utf8"), "public fixture");
+    await assert.rejects(stat(join(target, "child")), { code: "ENOENT" });
+  });
+
+  test("Windows bootstrap ACL: untrusted generic ALL ancestor grant refuses without mutation", async () => {
+    const fixture = await createFixture();
+    const parent = join(fixture, "parent");
+    preparePrivateWindowsDirectory(parent);
+    const before = setFixtureDescriptor(parent, "generic-all-other");
+    const child = join(parent, "must-not-exist");
+    assert.throws(() => preparePrivateWindowsDirectory(child), /cannot be verified/);
+    await assert.rejects(stat(child), { code: "ENOENT" });
+    assert.equal(readFixtureDescriptor(parent), before);
+  });
+
   test("Windows bootstrap ACL: callback FullControl is not an unconditional private grant", async () => {
     const fixture = await createFixture();
     const directory = join(fixture, "private");
