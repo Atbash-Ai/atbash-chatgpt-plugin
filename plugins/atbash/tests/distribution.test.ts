@@ -15,6 +15,7 @@ test("built hook is self-contained and fails closed", () => {
     env: {
       ...process.env,
       ATBASH_CODEX_TIMEOUT_MS: "invalid",
+      ATBASH_HOOK_DEADLINE_MS: "",
     },
     input: JSON.stringify(makeHookInput()),
   });
@@ -59,6 +60,7 @@ test("marketplace runtime includes every supported native target", () => {
     env: {
       ...process.env,
       ATBASH_CODEX_TIMEOUT_MS: "invalid",
+      ATBASH_HOOK_DEADLINE_MS: "",
     },
     input: JSON.stringify(makeHookInput()),
   });
@@ -71,6 +73,48 @@ test("marketplace runtime includes every supported native target", () => {
       permissionDecisionReason: "Atbash ERROR: configuration is missing or invalid.",
     },
   });
+});
+
+test("marketplace runtime ships every entry point with the mode the build sets", () => {
+  // CI rebuilds the runtime on Linux and diffs it against the committed tree, modes included; on
+  // Windows the working tree cannot show a mode, so the index is what is checked. The hashbang
+  // bundles are executable, the shim and the library are not, and the installer is a bundle.
+  const expected: Record<string, string> = {
+    "runtime/atbash-native.cjs": "100644",
+    "runtime/index.cjs": "100644",
+    "runtime/install-hook.cjs": "100755",
+    "runtime/pre-tool-use.cjs": "100644",
+    "runtime/pre-tool-use-main.cjs": "100755",
+    "runtime/status.cjs": "100755",
+  };
+  const listing = spawnSync("git", ["ls-files", "--stage", "--", "runtime/*.cjs"], {
+    cwd: process.cwd(),
+    encoding: "utf8",
+  });
+  assert.equal(listing.status, 0, listing.stderr);
+  const recorded = Object.fromEntries(
+    listing.stdout
+      .trim()
+      .split(/\r?\n/)
+      .filter((line) => line !== "")
+      .map((line) => {
+        const [meta, path] = line.split("\t");
+        return [path, meta?.split(" ")[0]];
+      }),
+  );
+  assert.deepEqual(recorded, expected);
+  for (const path of Object.keys(expected)) {
+    assert.equal(existsSync(path), true, path);
+  }
+  // Each bundled entry point starts with the hashbang the build preserves; the shim does not.
+  for (const path of [
+    "runtime/install-hook.cjs",
+    "runtime/pre-tool-use-main.cjs",
+    "runtime/status.cjs",
+  ]) {
+    assert.match(readFileSync(path, "utf8"), /^#!\/usr\/bin\/env node\n/, path);
+  }
+  assert.doesNotMatch(readFileSync("runtime/pre-tool-use.cjs", "utf8"), /^#!/);
 });
 
 test("marketplace package includes the setup skill", () => {
