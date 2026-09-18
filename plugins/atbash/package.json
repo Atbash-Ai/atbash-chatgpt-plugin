@@ -24,6 +24,8 @@
     "hook:install": "node dist/install-hook.cjs"
   },
   "dependencies": {
-    "@atbash/sdk": "0.7.1"
+    "@atbash/sdk": "0.7.1",
+    "postchain-client": "2.1.2",
+    "proper-lockfile": "4.1.2"
   }
 }
