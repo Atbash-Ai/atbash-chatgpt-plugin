@@ -81,3 +81,8 @@ a shell. Node must use an absolute native .exe path. The invalid-interpreter
 fixture also uses .exe, preventing Windows application-association dialogs while
 retaining real host-shell execution checks. The refusal regression observes the
 launch boundary without invoking a document handler.
+
+Inherited installer regression verification includes a deterministic reused-inode
+case alongside real filesystem tests, so Windows inode allocation cannot conceal
+a missing change-time comparison. Review evidence distinguishes explicit guard
+mutations from historical shipped defects.

@@ -1202,6 +1202,10 @@ test("install-hook: status reports no registration as not enforcing, in the summ
 });
 
 test("install-hook: a file recreated with the same bytes and a reused inode is noticed by its change time", () => {
+  // Windows may allocate a different inode, masking a missing ctime check.
+  // Exercise the reused-inode case directly as well as the real filesystem below.
+  assert.equal(sameIdentity({ dev: 1, ino: 7, ctimeMs: 10 }, { dev: 1, ino: 7, ctimeMs: 11 }), false);
+  assert.equal(sameIdentity({ dev: 1, ino: 7, ctimeMs: 10 }, { dev: 1, ino: 7, ctimeMs: 10 }), true);
   // ext4 hands a freed inode straight back to the next file, so dev+inode alone compared equal
   // for an unlink-and-recreate with identical bytes (seen on WSL2). The change time is new.
   const home = tempHome();
