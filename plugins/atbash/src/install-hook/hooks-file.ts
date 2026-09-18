@@ -310,7 +310,9 @@ function describeJsonError(error: unknown): string {
   const position = /at position \d+(?: \(line \d+ column \d+\))?/.exec(message)?.[0];
   if (position !== undefined) return `syntax error ${position}`;
   if (/end of JSON input/i.test(message)) return "unexpected end of input";
-  const token = /Unexpected token '(.)'/.exec(message)?.[1];
+  // The u flag makes (.) one code point, so an astral character is named by its real code point
+  // rather than by a lone surrogate.
+  const token = /Unexpected token '(.)'/u.exec(message)?.[1];
   if (token === undefined) return "syntax error";
   // The token is one character of the file itself: a printable ASCII one is quoted, anything
   // else (a bidi override, an escape, a line separator) is named by its code point so that no raw
