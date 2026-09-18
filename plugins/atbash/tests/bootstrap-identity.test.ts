@@ -60,6 +60,13 @@ const load = native.loadAgent;
 native.loadAgent = (...args) => {
   const agent = load(...args);
   checkpoint('readback');
+  fault('readback');
+  if (mode === 'error-readback-mismatch' && !faultInjected) {
+    faultInjected = true;
+    boundaries.push('readback-mismatch');
+    // Negating the compressed point preserves a valid but different public key.
+    return {pubkey:(agent.pubkey.startsWith('02') ? '03' : '02') + agent.pubkey.slice(2)};
+  }
   return agent;
 };
 let storageCalls = 0;
@@ -68,7 +75,14 @@ let writtenBytes = 0;
 let encodedLength = 0;
 let publications = 0;
 let partialVerified = false;
+let faultInjected = false;
 const boundaries = [];
+function fault(boundary) {
+  if (mode !== 'error-' + boundary || faultInjected) return;
+  faultInjected = true;
+  boundaries.push(boundary);
+  throw new Error('Synthetic fixture I/O failure');
+}
 function checkpoint(boundary) {
   if (mode !== 'crash-' + boundary) return;
   // Only public metadata is serialized. Abrupt exit deliberately skips finally.
@@ -92,7 +106,7 @@ for (const method of ['lstat', 'realpath', 'link', 'open']) {
       await fs.writeFile(join(home,'.config','atbash','guard-client-key'), 'concurrent public marker', {flag:'wx'});
       boundaries.push('destination-created');
     }
-    if (method === 'link') checkpoint('before-link');
+    if (method === 'link') { checkpoint('before-link'); fault('before-link'); }
     const result = await original(...args);
     if (method === 'link') { publications++; checkpoint('after-link'); }
     if (method === 'open' && basename(String(args[0])) === '.onboarding-bootstrap-claim') checkpoint('claim');
@@ -106,7 +120,7 @@ for (const method of ['lstat', 'realpath', 'link', 'open']) {
       result.writeFile = async (...values) => {
         secretWrites++;
         encodedLength = values[0].length;
-        if (mode === 'crash-partial-write') {
+        if (mode === 'crash-partial-write' || mode === 'error-partial-write') {
           const short = await result.write(values[0].subarray(0, Math.floor(encodedLength / 2)));
           writtenBytes = short.bytesWritten;
           const actual = await fs.readFile(join(home,'.config','atbash','.onboarding-bootstrap-staging'));
@@ -114,6 +128,7 @@ for (const method of ['lstat', 'realpath', 'link', 'open']) {
             writtenBytes > 0 && actual.equals(values[0].subarray(0,writtenBytes));
           actual.fill(0);
           checkpoint('partial-write');
+          fault('partial-write');
         }
         const outcome = await write(...values);
         writtenBytes = encodedLength;
@@ -123,8 +138,10 @@ for (const method of ['lstat', 'realpath', 'link', 'open']) {
       for (const [method, boundary] of [['sync','fsync'],['close','close']]) {
         const operation = result[method].bind(result);
         result[method] = async (...values) => {
+          if (method === 'sync') fault('before-fsync');
           const outcome = await operation(...values);
           checkpoint(boundary);
+          if (method === 'close') fault('after-close');
           return outcome;
         };
       }
@@ -147,7 +164,7 @@ try {
   else if (mode === 'override-path') result = await bootstrapWindowsIdentity({keyPath:''});
   else result = await bootstrapWindowsIdentity();
 } catch (error) { failed = true; message = error.message; }
-process.stdout.write(JSON.stringify({failed,message,result,generated,storageCalls,secretWrites,publications,boundaries,helperCount:helpers.length,helpersClosed:helpers.every(h=>h.closed),helperRequests,elapsedMs:Math.round(performance.now()-started)}));
+process.stdout.write(JSON.stringify({failed,message,result,generated,generatedPubkey,storageCalls,secretWrites,writtenBytes,encodedLength,partialVerified,publications,boundaries,helperCount:helpers.length,helpersClosed:helpers.every(h=>h.closed),helperRequests,elapsedMs:Math.round(performance.now()-started)}));
 `;
 
 interface ChildResult {
@@ -158,6 +175,10 @@ interface ChildResult {
   storageCalls: number;
   secretWrites: number;
   publications: number;
+  writtenBytes: number;
+  encodedLength: number;
+  partialVerified: boolean;
+  generatedPubkey?: string;
   boundaries: string[];
   helperCount: number;
   helpersClosed: boolean;
@@ -564,6 +585,79 @@ if (process.platform === "win32") {
         assert.deepEqual((await readdir(directory)).sort(), names);
         assert.deepEqual(await snapshot(), before);
       });
+    });
+  }
+
+  for (const boundary of [
+    "partial-write",
+    "before-fsync",
+    "after-close",
+    "before-link",
+    "readback",
+    "readback-mismatch",
+  ]) {
+    test(`bootstrap injected ${boundary} error preserves identity and refuses readiness`, async () => {
+      const home = await createFixture();
+      const result = await run(home, `error-${boundary}`);
+      const published = boundary.startsWith("readback");
+      assert.deepEqual(result.boundaries, [boundary], "Fault must reach its exact boundary once");
+      assert.equal(result.failed, true);
+      assert.equal(result.result, undefined);
+      assert.equal(
+        result.message,
+        "Local identity setup could not safely finish. Existing files were preserved.",
+      );
+      assert.equal(result.generated, 1);
+      assert.equal(result.secretWrites, 1);
+      assert.equal(result.publications, published ? 1 : 0);
+      assert.equal(result.helperCount, 1);
+      assert.equal(result.helpersClosed, true);
+      assert.match(result.generatedPubkey ?? "", /^(02|03)[0-9a-f]{64}$/);
+      assert.ok(result.writtenBytes > 0);
+      if (boundary === "partial-write") {
+        assert.equal(result.partialVerified, true);
+        assert.ok(result.writtenBytes < result.encodedLength);
+      } else assert.equal(result.writtenBytes, result.encodedLength);
+      const directory = join(home, ".config", "atbash");
+      const names = [
+        ".onboarding-bootstrap-claim",
+        ".onboarding-bootstrap-staging",
+        ...(published ? ["guard-client-key"] : []),
+      ];
+      assert.deepEqual((await readdir(directory)).sort(), names);
+      const snapshot = async () =>
+        Promise.all(
+          names.map(async (name) => {
+            const file = join(directory, name);
+            const stats = await lstat(file, { bigint: true });
+            assert.equal(stats.isFile(), true);
+            assert.equal(stats.isSymbolicLink(), false);
+            return {
+              ino: stats.ino,
+              dev: stats.dev,
+              nlink: stats.nlink,
+              size: stats.size,
+              hash: createHash("sha256")
+                .update(await readFile(file))
+                .digest("hex"),
+            };
+          }),
+        );
+      const before = await snapshot();
+      assert.equal(before[0]!.nlink, 1n);
+      assert.equal(before[0]!.size, 0n);
+      assert.equal(before[1]!.nlink, published ? 2n : 1n);
+      assert.equal(before[1]!.size, BigInt(result.writtenBytes));
+      if (published) {
+        assert.deepEqual(before[2], before[1]);
+        const restart = await run(home, "read");
+        assert.equal(restart.failed, false);
+        assert.equal(restart.generated, 0);
+        assert.equal(restart.result?.pubkey, result.generatedPubkey);
+      } else await assert.rejects(lstat(join(directory, "guard-client-key")), { code: "ENOENT" });
+      refused(await run(home));
+      assert.deepEqual((await readdir(directory)).sort(), names);
+      assert.deepEqual(await snapshot(), before);
     });
   }
 

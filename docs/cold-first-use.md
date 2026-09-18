@@ -190,3 +190,14 @@ passed together (11 executed, zero failures or skips). This is focused evidence;
 the remaining I/O exceptions, substitution/drift cases, full-suite verification
 and live enrollment are still required. No onboarding CLI, installed hook or
 personal identity is changed by these tests.
+
+Six injected error cases now cover an actual verified partial write followed by
+an exception, an exception before fsync, an exception after a completed close,
+an exception before publication, and either an exception or a different public
+identity after actual SDK readback. Faults occur once at their named boundary.
+Every case requires generic refusal, helper closure, retained file identities
+and bytes, and a fresh retry with zero generation, writes or publication. After
+publication, a separate uninjected SDK process must still load the original
+identity. These six cases and the ordinary success control passed together.
+Injected I/O exceptions prove application error handling, not physical disk
+failure or crash durability. Full validation and live onboarding remain pending.
