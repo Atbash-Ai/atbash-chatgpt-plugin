@@ -34,6 +34,10 @@ import { basename, dirname, isAbsolute, join } from "node:path";
 export const HOOK_SCRIPT = "pre-tool-use.cjs";
 export const HOOK_MATCHER = "*";
 export const HOOK_TIMEOUT_SECONDS = 35;
+/** The smallest hook timeout that can outlast the shim's largest deadline (30 s): the host cuts a
+ *  hook off when its timeout expires and proceeds with the tool call (measured on Codex 0.154.0),
+ *  so an entry under this is registered but not a gate. The installer writes HOOK_TIMEOUT_SECONDS. */
+export const HOOK_TIMEOUT_FLOOR_SECONDS = 31;
 export const HOOK_STATUS_MESSAGE = "Checking action with Atbash";
 
 /** A refusal: the target cannot be handled safely, and nothing has been written. */

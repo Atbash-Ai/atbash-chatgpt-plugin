@@ -9,6 +9,9 @@ import { existsSync, readFileSync } from "node:fs";
 import { isAbsolute } from "node:path";
 
 import {
+  HOOK_MATCHER,
+  HOOK_TIMEOUT_FLOOR_SECONDS,
+  HOOK_TIMEOUT_SECONDS,
   HooksFileRefusal,
   isAtbashHook,
   isAtbashLookalike,
@@ -22,8 +25,10 @@ export interface RegistrationReport {
   hooksPath: string;
   /** Own entries found (commands naming this plugin's hook script). */
   registered: number;
-  /** Own entries the host can actually spawn: an absolute interpreter that exists and a script
-   *  that exists. An own entry whose pinned node is gone is registered but enforces nothing. */
+  /** Own entries the host can actually spawn AND would run as written: an absolute interpreter
+   *  that exists, a script that exists, type "command", a matcher covering every tool, and a
+   *  timeout the hook's own deadline fits under. An own entry whose pinned node is gone, or that
+   *  the host would cut off or never run, is registered but enforces nothing. */
   spawnable: number;
   /** Warnings: a missing interpreter or script on an own or look-alike entry, or an unreadable file. */
   warnings: string[];
@@ -66,9 +71,14 @@ export function inspectRegistration(
       const parsed = parseHookCommand(spelled);
       if (parsed === undefined) {
         // The command text comes from a file the user (or, at project scope, a checked-out
-        // repository) controls: it is reported, but bounded.
+        // repository) controls, and a hook's command line may carry a token: its shape is
+        // reported, never its text (the installer's own summary holds the same line).
+        const shape =
+          typeof spelled === "string"
+            ? `a string of ${spelled.length} characters`
+            : `a ${spelled === null ? "null" : typeof spelled} value`;
         report.warnings.push(
-          `${label} has a command this plugin cannot parse: ${String(spelled).slice(0, 200)}`,
+          `${label} has a command this plugin cannot parse (${shape}; the text is not shown because a hook's command line may carry a secret). Re-run install-hook.cjs to rewrite it.`,
         );
         continue;
       }
@@ -89,6 +99,40 @@ export function inspectRegistration(
         report.warnings.push(
           `${label} names a hook script that no longer exists (${parsed.script}); re-run install-hook.cjs from the plugin's current location.`,
         );
+      }
+      // Spawnable is still not a gate when the host would not run the entry as the installer
+      // wrote it: a hook type other than "command", a matcher that covers some tools only, or a
+      // timeout under the shim's largest deadline (the host cuts the hook off when the timeout
+      // expires and proceeds with the tool call - measured on Codex 0.154.0). Each is reported
+      // by the field, and none counts toward enforcing.
+      if (own) {
+        const fields =
+          typeof hook === "object" && hook !== null ? (hook as Record<string, unknown>) : {};
+        if (fields.type !== "command") {
+          spawnable = false;
+          report.warnings.push(
+            `${label} has type ${JSON.stringify(fields.type)} instead of "command"; the host will not run it as a command hook. Re-run install-hook.cjs.`,
+          );
+        }
+        const matcher = group.matcher;
+        if (matcher !== undefined && matcher !== "" && matcher !== HOOK_MATCHER) {
+          spawnable = false;
+          report.warnings.push(
+            `${label} is under matcher ${JSON.stringify(matcher)} and covers only the tools that matcher names, not every tool call; re-run install-hook.cjs to register it under "${HOOK_MATCHER}".`,
+          );
+        }
+        const timeout = fields.timeout;
+        if (
+          timeout !== undefined &&
+          (typeof timeout !== "number" ||
+            !Number.isFinite(timeout) ||
+            timeout < HOOK_TIMEOUT_FLOOR_SECONDS)
+        ) {
+          spawnable = false;
+          report.warnings.push(
+            `${label} has timeout ${JSON.stringify(timeout)}; the host cuts a hook off when its timeout expires and proceeds with the tool call, so anything under ${HOOK_TIMEOUT_FLOOR_SECONDS} s cannot outlast the hook's own deadline. Re-run install-hook.cjs (it writes ${HOOK_TIMEOUT_SECONDS}).`,
+          );
+        }
       }
       if (spawnable) report.spawnable += 1;
     }

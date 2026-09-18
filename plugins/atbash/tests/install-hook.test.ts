@@ -235,10 +235,12 @@ test("install-hook: the entry names the plugin's real absolute hook path, forwar
     true,
     "own path with trailing arguments",
   );
+  // Ownership is judged on the spelling the host runs: a commandWindows-only entry is ours on
+  // win32 and inert (a look-alike, never ours) everywhere else.
   assert.equal(
     isAtbashHook({ commandWindows: `node "${REAL_HOOK_SCRIPT}"` }, IDENTITY),
-    true,
-    "own path in the Windows spelling",
+    WIN32,
+    "own path in the Windows spelling counts on win32 only",
   );
   const otherCase = { command: `node "${REAL_HOOK_SCRIPT.toUpperCase()}"` };
   assert.equal(isAtbashHook(otherCase, IDENTITY), WIN32, "case folds on Windows only");
@@ -1428,5 +1430,120 @@ test("install-hook: the built installer (dist and the committed runtime) registe
     } finally {
       rmSync(home, { force: true, recursive: true });
     }
+  }
+});
+
+test("install-hook: an Atbash entry the host would not run - a narrow matcher, a timeout under the shim's deadline, or a type other than command - is registered but never enforcing", async () => {
+  // Loaded here, not at the top: registration.js postdates the before-SHAs the proofs of the
+  // older installer fixes carry this file into.
+  const { inspectRegistration, summarizeRegistrations } =
+    await import("../src/install-hook/registration.js");
+  // Spawnable is not a gate when the host would not run the entry as the installer wrote it: the
+  // host honours a hook's own timeout and proceeds when it expires (measured on Codex 0.154.0), a
+  // matcher covers only the tools it names, and a type other than "command" is not a command
+  // hook. Each case is registered, warned about by the field, and never counted as enforcing.
+  const home = tempHome();
+  try {
+    const hooksPath = join(home, "hooks.json");
+    assert.equal(installHook(options({ dir: home }), context(home)).action, "installed");
+    const healthy = readDocument(hooksPath);
+    const cases: { edit: (document: DocumentShape) => void; warning: RegExp }[] = [
+      {
+        edit: (d) => {
+          (d.hooks?.PreToolUse?.[0] as GroupShape).matcher = "Bash";
+        },
+        warning: /matcher "Bash".*every tool call/,
+      },
+      {
+        edit: (d) => {
+          (d.hooks?.PreToolUse?.[0]?.hooks?.[0] as HookShape).timeout = 1;
+        },
+        warning: /timeout 1;.*cuts a hook off/,
+      },
+      {
+        edit: (d) => {
+          (d.hooks?.PreToolUse?.[0]?.hooks?.[0] as HookShape).type = "webhook";
+        },
+        warning: /type "webhook" instead of "command"/,
+      },
+    ];
+    for (const c of cases) {
+      const document = JSON.parse(JSON.stringify(healthy)) as DocumentShape;
+      c.edit(document);
+      writeFileSync(hooksPath, JSON.stringify(document));
+      const report = inspectRegistration(hooksPath, IDENTITY);
+      assert.equal(report.registered, 1, "still ours: the script is this plugin's");
+      assert.equal(report.spawnable, 0, `counted as a gate: ${JSON.stringify(report.warnings)}`);
+      assert.equal(report.warnings.length, 1, JSON.stringify(report.warnings));
+      assert.match(report.warnings[0] ?? "", c.warning);
+      assert.equal(summarizeRegistrations([report]).enforcing, false);
+    }
+    // As written by the installer: enforcing, no warning.
+    writeFileSync(hooksPath, JSON.stringify(healthy));
+    const report = inspectRegistration(hooksPath, IDENTITY);
+    assert.deepEqual(report.warnings, []);
+    assert.equal(summarizeRegistrations([report]).enforcing, true);
+  } finally {
+    rmSync(home, { force: true, recursive: true });
+  }
+});
+
+test("install-hook: a command this plugin cannot parse is reported by size, never by text", async () => {
+  const { inspectRegistration } = await import("../src/install-hook/registration.js");
+  // A hook's command line may carry a token. A look-alike entry (the Atbash status message on a
+  // command the plugin cannot parse) is warned about by the shape of its command, and the text -
+  // token included - never reaches stderr or the host transcript.
+  const home = tempHome();
+  try {
+    const hooksPath = join(home, "hooks.json");
+    writeFileSync(
+      hooksPath,
+      JSON.stringify({
+        hooks: {
+          PreToolUse: [
+            {
+              matcher: "*",
+              hooks: [
+                {
+                  type: "command",
+                  command: "node --token=sk-live-SECRET-0123456789 /opt/other/pre-tool-use.cjs",
+                  statusMessage: HOOK_STATUS_MESSAGE,
+                },
+              ],
+            },
+          ],
+        },
+      }),
+    );
+    const report = inspectRegistration(hooksPath, IDENTITY);
+    assert.equal(report.registered, 0);
+    assert.equal(report.warnings.length, 1, JSON.stringify(report.warnings));
+    assert.match(report.warnings[0] ?? "", /cannot parse \(a string of \d+ characters/);
+    assert.doesNotMatch(report.warnings[0] ?? "", /sk-live|SECRET|--token/);
+  } finally {
+    rmSync(home, { force: true, recursive: true });
+  }
+});
+
+test("install-hook: a project hooks.json that links outside the project is refused, and the link target is untouched", () => {
+  // A checked-out repository can ship .codex as a link to a directory elsewhere (a junction on
+  // Windows, a symlink on POSIX) and steer the project-scope write out of the project - into a
+  // settings file in the home directory, say. The installer refuses and writes nothing.
+  const home = tempHome();
+  try {
+    const project = join(home, "project");
+    const elsewhere = join(home, "elsewhere");
+    mkdirSync(project);
+    mkdirSync(elsewhere);
+    symlinkSync(elsewhere, join(project, ".codex"), "junction");
+    assert.throws(
+      () => installHook(options({ scope: "project", dir: project }), context(home)),
+      (error: unknown) =>
+        error instanceof HooksFileRefusal && /outside the project directory/.test(error.message),
+    );
+    assert.equal(existsSync(join(elsewhere, "hooks.json")), false, "the link target was written");
+    assert.deepEqual(readdirSync(elsewhere), []);
+  } finally {
+    rmSync(home, { force: true, recursive: true });
   }
 });

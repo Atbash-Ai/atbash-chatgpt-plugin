@@ -1,6 +1,6 @@
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
-import { dirname, resolve } from "node:path";
+import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 
 import {
   HooksFileRefusal,
@@ -177,6 +177,20 @@ export interface InstallContext extends PathContext {
   beforeSwap?: () => void;
 }
 
+/** The real path of a file that may not exist yet: its deepest existing ancestor resolved, the
+ *  missing tail re-joined. A path with no existing ancestor is returned as given. */
+function realpathThroughMissing(path: string): string {
+  const missing: string[] = [];
+  let probe = path;
+  while (!existsSync(probe)) {
+    const parent = dirname(probe);
+    if (parent === probe) return path;
+    missing.unshift(basename(probe));
+    probe = parent;
+  }
+  return join(realpathSync(probe), ...missing);
+}
+
 /** The whole operation, minus printing. Throws HooksFileRefusal for a file that cannot be handled
  *  and lets file-system errors propagate; in both cases nothing has been written. */
 export function installHook(options: InstallHookOptions, context: InstallContext): InstallResult {
@@ -185,6 +199,20 @@ export function installHook(options: InstallHookOptions, context: InstallContext
   const identity: AtbashIdentity = { hookScript, platform: context.platform };
   const hooksPath = resolveHooksPath(options.scope, options.dir, context);
   const target = resolveWriteTarget(hooksPath);
+  if (options.scope === "project") {
+    // A project hooks file is written inside its project or not at all: a checked-out
+    // repository could ship .codex (or .codex/hooks.json) as a link to somewhere else - a
+    // settings file in the home directory, say - and steer this write out of the project.
+    // The project directory may not exist yet (a dry run or a first install into a fresh
+    // checkout): resolve through the missing tail the same way as the target.
+    const projectRoot = realpathThroughMissing(resolve(context.cwd, options.dir ?? context.cwd));
+    const inside = relative(projectRoot, realpathThroughMissing(target));
+    if (inside === "" || inside.startsWith("..") || isAbsolute(inside)) {
+      throw new HooksFileRefusal(
+        `${hooksPath} resolves to ${target}, outside the project directory ${projectRoot}; a project hooks file must live inside its project - fix the link first.`,
+      );
+    }
+  }
   const existingText = existsSync(target) ? readFileSync(target, "utf8") : undefined;
   const existingIdentity = existingText === undefined ? undefined : fileIdentity(target);
   const existing: HooksDocument =
