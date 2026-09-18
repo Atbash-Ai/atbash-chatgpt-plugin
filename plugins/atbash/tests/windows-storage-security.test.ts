@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { lstat, mkdir, open, readFile, stat, symlink, writeFile } from "node:fs/promises";
+import { link, lstat, mkdir, open, readFile, stat, symlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import test from "node:test";
 import {
@@ -13,10 +13,108 @@ import {
   preparePrivateWindowsDirectory,
   verifyPrivateWindowsDirectory,
   verifyPrivateWindowsFile,
+  verifyPrivateWindowsStorage,
 } from "../src/atbash/windows-storage-security.js";
 
 const TRUSTED_INSTALLER = "S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464";
 if (process.platform === "win32") {
+  test("Windows bootstrap ACL batch: Unicode sibling is not the requested directory", async () => {
+    const fixture = await createFixture();
+    const directory = join(fixture, "private");
+    const sibling = join(fixture, `pri${String.fromCharCode(0xad)}vate`);
+    preparePrivateWindowsDirectory(directory);
+    preparePrivateWindowsDirectory(sibling);
+    const file = join(sibling, "marker");
+    await writeFile(file, "public fixture");
+    verifyPrivateWindowsStorage(sibling, [file]);
+    const before = readFixtureDescriptor(sibling);
+    assert.throws(() => verifyPrivateWindowsStorage(directory, [file]), /cannot be verified/);
+    assert.equal(readFixtureDescriptor(sibling), before);
+    assert.equal(await readFile(file, "utf8"), "public fixture");
+  });
+  test("Windows bootstrap ACL batch: every member is verified and intentional hardlinks work", async () => {
+    const fixture = await createFixture();
+    const directory = join(fixture, "private");
+    preparePrivateWindowsDirectory(directory);
+    const files = ["claim", "stage", "published"].map((name) => join(directory, name));
+    await writeFile(files[0]!, "public claim");
+    await writeFile(files[1]!, "public stage");
+    await link(files[1]!, files[2]!);
+    verifyPrivateWindowsStorage(directory, files);
+    assert.equal((await stat(files[2]!)).nlink, 2);
+    const last = join(directory, "independent-last-member");
+    await writeFile(last, "public fixture");
+    const members = [files[0]!, files[1]!, last];
+    verifyPrivateWindowsStorage(directory, members);
+    const handle = await open(last, "r");
+    try {
+      const before = setFixtureDescriptor(last, "read");
+      assert.throws(() => verifyPrivateWindowsStorage(directory, members), /cannot be verified/);
+      assert.equal(readFixtureDescriptor(last), before);
+      assert.equal(await handle.readFile("utf8"), "public fixture");
+    } finally {
+      await handle.close();
+    }
+  });
+
+  test("Windows bootstrap ACL batch: malformed, aliased and escaping members refuse", async () => {
+    const fixture = await createFixture();
+    const directory = join(fixture, "private");
+    preparePrivateWindowsDirectory(directory);
+    const file = join(directory, "marker");
+    await writeFile(file, "public fixture");
+    verifyPrivateWindowsStorage(directory, [file]);
+    const malformed: unknown[] = [
+      undefined,
+      null,
+      file,
+      [],
+      [file, file, file, file],
+      [null],
+      [3],
+      [file, file.toUpperCase()],
+      [`${directory}\\.\\marker`],
+      [`${directory}\\..\\private\\marker`],
+      [`${file}:stream`],
+      [`${file}.`],
+      [`${file} `],
+      [join(directory, "MARKER~1")],
+      [join(fixture, "outside")],
+      [join(directory, "nested", "marker")],
+    ];
+    for (const members of malformed) {
+      assert.throws(
+        () => verifyPrivateWindowsStorage(directory, members as string[]),
+        /cannot be verified/,
+      );
+    }
+    assert.equal(await readFile(file, "utf8"), "public fixture");
+  });
+
+  test("Windows bootstrap ACL batch: changed directory and ancestor permissions refuse", async () => {
+    const fixture = await createFixture();
+    const parent = join(fixture, "parent");
+    preparePrivateWindowsDirectory(parent);
+    const directory = join(parent, "private");
+    preparePrivateWindowsDirectory(directory);
+    const file = join(directory, "marker");
+    await writeFile(file, "public fixture");
+    verifyPrivateWindowsStorage(directory, [file]);
+    addFixtureGrant(parent, "S-1-1-0");
+    const before = readFixtureDescriptor(parent);
+    assert.throws(() => verifyPrivateWindowsStorage(directory, [file]), /cannot be verified/);
+    assert.equal(readFixtureDescriptor(parent), before);
+
+    const other = join(fixture, "other");
+    preparePrivateWindowsDirectory(other);
+    const otherFile = join(other, "marker");
+    await writeFile(otherFile, "public fixture");
+    verifyPrivateWindowsStorage(other, [otherFile]);
+    addFixtureGrant(other, "S-1-1-0");
+    const changed = readFixtureDescriptor(other);
+    assert.throws(() => verifyPrivateWindowsStorage(other, [otherFile]), /cannot be verified/);
+    assert.equal(readFixtureDescriptor(other), changed);
+  });
   test("Windows bootstrap ACL: directory verification never creates or repairs storage", async () => {
     const fixture = await createFixture();
     const missing = join(fixture, "absent");

@@ -2,12 +2,31 @@ import { spawnSync } from "node:child_process";
 import { isAbsolute, join } from "node:path";
 
 // This helper handles paths and ACLs only. Private key material must never enter
-// its input, argv, output or errors. Bootstrap integration is deliberately absent.
+// its input, argv, output or errors. Each call independently verifies current ACLs.
 const SCRIPT = String.raw`
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
 try {
   $request = [Console]::In.ReadToEnd() | ConvertFrom-Json
+  if ($request.operation -ceq 'verify-storage') {
+    $names = @($request.PSObject.Properties.Name)
+    if ($names.Count -ne 3 -or @($names | Where-Object { $_ -cnotin @('operation','path','files') }).Count -ne 0 -or
+        $request.path -isnot [string] -or $request.files -isnot [array] -or
+        $request.files.Count -lt 1 -or $request.files.Count -gt 3) { throw 'path' }
+    function CheckCanonical([string]$candidate) {
+      if ($candidate -notmatch '^[A-Za-z]:\\' -or $candidate.Substring(2).Contains(':') -or
+          $candidate -match '[/~]' -or $candidate -match '[. ](\\|$)' -or
+          $candidate -ine [IO.Path]::GetFullPath($candidate).TrimEnd('\')) { throw 'path' }
+    }
+    CheckCanonical $request.path
+    $seen = @()
+    foreach ($file in $request.files) {
+      if ($file -isnot [string]) { throw 'path' }
+      CheckCanonical $file
+      if ([IO.Path]::GetDirectoryName($file) -ine $request.path -or $seen -contains $file) { throw 'path' }
+      $seen += $file
+    }
+  }
   $path = [string]$request.path
   if ($path -notmatch '^[A-Za-z]:\\' -or $path.Substring(2).Contains(':')) { throw 'path' }
   $path = [IO.Path]::GetFullPath($path).TrimEnd('\')
@@ -74,7 +93,7 @@ try {
     if (-not $full) { throw 'rights' }
   }
   CheckAncestors $path
-  switch ([string]$request.operation) {
+  switch -CaseSensitive ([string]$request.operation) {
     'prepare-directory' {
       if (-not [IO.Directory]::Exists($path)) {
         if ([IO.File]::Exists($path)) { throw 'exists' }
@@ -89,6 +108,15 @@ try {
     }
     'verify-file' { CheckPrivate $path $false }
     'verify-directory' { CheckPrivate $path $true }
+    'verify-storage' {
+      CheckPrivate $path $true
+      foreach ($file in $request.files) {
+        CheckAncestors $file
+        CheckPrivate $file $false
+        CheckAncestors $file
+      }
+      CheckPrivate $path $true
+    }
     default { throw 'operation' }
   }
   CheckAncestors $path
@@ -102,8 +130,9 @@ try {
 `;
 
 function check(
-  operation: "prepare-directory" | "verify-directory" | "verify-file",
+  operation: "prepare-directory" | "verify-directory" | "verify-file" | "verify-storage",
   path: string,
+  files?: readonly string[],
 ): void {
   if (process.platform !== "win32") throw new Error("Windows private storage is unsupported here.");
   const systemRoot = process.env.SystemRoot;
@@ -120,7 +149,7 @@ function check(
       Buffer.from(SCRIPT, "utf16le").toString("base64"),
     ],
     {
-      input: JSON.stringify({ operation, path }),
+      input: JSON.stringify({ operation, path, ...(files === undefined ? {} : { files }) }),
       encoding: "utf8",
       windowsHide: true,
       shell: false,
@@ -142,4 +171,9 @@ export function verifyPrivateWindowsFile(path: string): void {
 
 export function verifyPrivateWindowsDirectory(path: string): void {
   check("verify-directory", path);
+}
+
+/** Verify one boundary in one process; never cache across key generation or I/O. */
+export function verifyPrivateWindowsStorage(path: string, files: readonly string[]): void {
+  check("verify-storage", path, files);
 }

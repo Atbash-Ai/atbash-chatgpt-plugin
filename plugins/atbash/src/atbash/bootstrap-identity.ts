@@ -5,7 +5,7 @@ import { homedir } from "node:os";
 import { isAbsolute, join, resolve } from "node:path";
 import {
   preparePrivateWindowsDirectory,
-  verifyPrivateWindowsDirectory,
+  verifyPrivateWindowsStorage,
   verifyPrivateWindowsFile,
 } from "./windows-storage-security.js";
 
@@ -124,9 +124,10 @@ export async function bootstrapWindowsIdentity(): Promise<CreatedLocalIdentity> 
       sameObject(identity(await lstat(configParent, { bigint: true }), true), parentIdentity);
       sameObject(identity(await lstat(directory, { bigint: true }), true), directoryIdentity);
       if (!samePath(await realpath(directory), directory)) refuse();
-      verifyPrivateWindowsDirectory(directory);
-      verifyPrivateWindowsFile(claimPath);
-      verifyPrivateWindowsFile(stagingPath);
+      verifyPrivateWindowsStorage(
+        directory,
+        published ? [claimPath, stagingPath, destination] : [claimPath, stagingPath],
+      );
       sameObject(identity(await claim!.stat({ bigint: true }), false, 1n), claimIdentity);
       const claimed = identity(await lstat(claimPath, { bigint: true }), false, 1n);
       sameObject(claimed, claimIdentity);
@@ -139,7 +140,6 @@ export async function bootstrapWindowsIdentity(): Promise<CreatedLocalIdentity> 
       for (const name of STORE_NAMES) {
         const path = join(directory, name);
         if (published && name === "guard-client-key") {
-          verifyPrivateWindowsFile(path);
           sameObject(identity(await lstat(path, { bigint: true }), false, links), stagingIdentity);
         } else await absent(path);
       }
