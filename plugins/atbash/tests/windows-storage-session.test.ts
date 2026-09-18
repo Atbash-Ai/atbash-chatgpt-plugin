@@ -160,6 +160,7 @@ class FixtureProcess extends EventEmitter {
   end(code: number | null, signal: string | null) {
     if (this.ended) return;
     this.ended = true;
+    this.emit("exit", code, signal);
     this.stdout.end();
     this.stderr.end();
     queueMicrotask(() => this.emit("close", code, signal));
@@ -189,6 +190,81 @@ function fakeSession(
 }
 
 if (process.platform === "win32") {
+  test("persistent ACL cleanup failure never escapes as a signaling exception", async (t) => {
+    const { session, child, restore } = fakeSession(t, () => {});
+    const pending = assert.rejects(session.verifyFile("C:\\public-fixture"), /cannot be verified/);
+    t.mock.method(child, "kill", () => {
+      throw new Error("synthetic signaling failure");
+    });
+    try {
+      assert.doesNotThrow(() => child.emit("error", new Error("public failure fixture")));
+      await pending;
+    } finally {
+      child.end(1, null);
+      await pending;
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      await session.dispose();
+      restore();
+    }
+  });
+
+  test("persistent ACL cleanup failure poisons repeated errors only once", async (t) => {
+    const { session, child, restore } = fakeSession(t, () => {});
+    const pending = assert.rejects(session.verifyFile("C:\\public-fixture"), /cannot be verified/);
+    let kills = 0;
+    t.mock.method(child, "kill", () => {
+      kills++;
+      return false;
+    });
+    try {
+      assert.doesNotThrow(() => {
+        child.emit("error", new Error("public failure fixture"));
+        child.emit("error", new Error("another public failure fixture"));
+      });
+      child.stderr.write("public stderr fixture");
+      await pending;
+      assert.equal(kills, 1);
+    } finally {
+      child.end(1, null);
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      await session.dispose();
+      restore();
+    }
+  });
+
+  test("persistent ACL cleanup failure consumes only one cleanup budget", async (t) => {
+    t.mock.timers.enable({ apis: ["setTimeout"] });
+    const { session, child, restore } = fakeSession(t, (request, process) => {
+      process.stdout.write(
+        JSON.stringify({ session: request.session, sequence: request.sequence, ok: true }) + "\n",
+      );
+    });
+    child.stdin.removeAllListeners("finish");
+    t.mock.method(child, "kill", () => false);
+    let disposal: Promise<void> | undefined;
+    try {
+      await session.verifyFile("C:\\public-fixture");
+      const finishing = assert.rejects(session.finish(), /cannot be verified/);
+      t.mock.timers.tick(2_000);
+      await finishing;
+      let refused = false;
+      disposal = session.dispose().then(
+        () => {
+          assert.fail("Unconfirmed exit cannot succeed");
+        },
+        () => {
+          refused = true;
+        },
+      );
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      assert.equal(refused, true, "Dispose must reuse the already expired cleanup budget");
+    } finally {
+      t.mock.timers.tick(2_000);
+      await disposal;
+      child.end(1, null);
+      restore();
+    }
+  });
   for (const phase of ["buffered reply", "next request"] as const) {
     test(`persistent ACL observed process exit cannot authorize ${phase}`, async (t) => {
       const { session, child, restore } = fakeSession(t, (request, process) => {
