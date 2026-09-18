@@ -27,6 +27,13 @@ receives a key. It runs without a shell association or visible window, with a
 deadline and bounded output. Errors do not echo paths or exception details.
 Unsupported platforms and unverifiable permissions fail closed.
 
+Validation examines every raw DACL entry instead of relying on the high-level
+rule projection, which can omit rule types or discard callback conditions. Only
+ordinary unconditional allow/deny entries with supported flags and file rights
+are understood; other entries refuse setup. Windows generic file rights are
+mapped explicitly before access checks. A callback FullControl entry cannot
+satisfy the required unconditional private grant.
+
 Windows TEMP and application-managed folders may grant additional principals
 replacement rights. Tests use fresh, uniquely named profile fixture directories
 whose actual ancestors pass the same checks. They do not repair those ancestors

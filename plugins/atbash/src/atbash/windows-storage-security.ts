@@ -20,6 +20,26 @@ try {
     [Security.AccessControl.FileSystemRights]::DeleteSubdirectoriesAndFiles -bor
     [Security.AccessControl.FileSystemRights]::ChangePermissions -bor
     [Security.AccessControl.FileSystemRights]::TakeOwnership
+  function ReadRawRules($acl) {
+    $raw = [Security.AccessControl.RawSecurityDescriptor]::new($acl.GetSecurityDescriptorBinaryForm(), 0)
+    if ($null -eq $raw.DiscretionaryAcl) { throw 'null-dacl' }
+    foreach ($ace in $raw.DiscretionaryAcl) {
+      # GetAccessRules can omit ACE classes and erase callback conditions.
+      if ($ace -isnot [Security.AccessControl.CommonAce] -or $ace.IsCallback -or
+          $ace.AceType -notin @([Security.AccessControl.AceType]::AccessAllowed, [Security.AccessControl.AceType]::AccessDenied)) { throw 'ace-type' }
+      if (([int]$ace.AceFlags -band 224) -ne 0) { throw 'ace-flags' }
+      $mask = [long]$ace.AccessMask -band 4294967295
+      if (($mask -band (4294967295 -bxor (4026531840 -bor 2032127))) -ne 0) { throw 'ace-mask' }
+      # Windows file generic mappings: READ_CONTROL + SYNCHRONIZE plus file rights.
+      # https://learn.microsoft.com/en-us/windows/win32/fileio/file-security-and-access-rights
+      $rights = $mask -band 268435455
+      if (($mask -band 2147483648) -ne 0) { $rights = $rights -bor 1179785 }
+      if (($mask -band 1073741824) -ne 0) { $rights = $rights -bor 1179926 }
+      if (($mask -band 536870912) -ne 0) { $rights = $rights -bor 1179808 }
+      if (($mask -band 268435456) -ne 0) { $rights = $rights -bor 2032127 }
+      [pscustomobject]@{ Sid=$ace.SecurityIdentifier.Value; Flags=[int]$ace.AceFlags; Allow=($ace.AceType -eq [Security.AccessControl.AceType]::AccessAllowed); Rights=$rights }
+    }
+  }
   function CheckAncestors([string]$candidate) {
     $parent = [IO.Directory]::GetParent($candidate)
     if ($null -eq $parent) { throw 'parent' }
@@ -27,13 +47,11 @@ try {
       $attributes = [IO.File]::GetAttributes($parent.FullName)
       if (($attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) { throw 'reparse' }
       $acl = [IO.Directory]::GetAccessControl($parent.FullName)
-      $raw = [Security.AccessControl.RawSecurityDescriptor]::new($acl.GetSecurityDescriptorBinaryForm(), 0)
-      if ($null -eq $raw.DiscretionaryAcl) { throw 'null-dacl' }
       if ($trusted -notcontains $acl.GetOwner([Security.Principal.SecurityIdentifier]).Value) { throw 'ancestor-owner' }
-      foreach ($ace in $acl.GetAccessRules($true, $true, [Security.Principal.SecurityIdentifier])) {
-        if (($ace.PropagationFlags -band [Security.AccessControl.PropagationFlags]::InheritOnly) -ne 0) { continue }
-        if ($ace.AccessControlType -eq 'Allow' -and $trusted -notcontains $ace.IdentityReference.Value -and
-            ($ace.FileSystemRights -band $danger) -ne 0) { throw 'ancestor-rights' }
+      foreach ($ace in @(ReadRawRules $acl)) {
+        if (($ace.Flags -band 8) -ne 0) { continue }
+        if ($ace.Allow -and $trusted -notcontains $ace.Sid -and
+            ($ace.Rights -band $danger) -ne 0) { throw 'ancestor-rights' }
       }
       $parent = $parent.Parent
     }
@@ -44,15 +62,13 @@ try {
     if ([bool]($attributes -band [IO.FileAttributes]::Directory) -ne $directory) { throw 'kind' }
     $acl = if ($directory) { [IO.Directory]::GetAccessControl($candidate) } else { [IO.File]::GetAccessControl($candidate) }
     if ($acl.GetOwner([Security.Principal.SecurityIdentifier]).Value -ne $sid.Value) { throw 'owner' }
-    $raw = [Security.AccessControl.RawSecurityDescriptor]::new($acl.GetSecurityDescriptorBinaryForm(), 0)
-    if ($null -eq $raw.DiscretionaryAcl) { throw 'null-dacl' }
     if ($directory -and -not $acl.AreAccessRulesProtected) { throw 'inheritance' }
     $full = $false
-    foreach ($ace in $acl.GetAccessRules($true, $true, [Security.Principal.SecurityIdentifier])) {
-      if ($ace.IdentityReference.Value -ne $sid.Value -or $ace.AccessControlType -ne 'Allow') { throw 'principal' }
-      if (($ace.PropagationFlags -band [Security.AccessControl.PropagationFlags]::InheritOnly) -ne 0) { throw 'inherit-only' }
-      if (($ace.FileSystemRights -band [Security.AccessControl.FileSystemRights]::FullControl) -eq [Security.AccessControl.FileSystemRights]::FullControl) {
-        if (-not $directory -or ($ace.InheritanceFlags -eq ([Security.AccessControl.InheritanceFlags]::ObjectInherit -bor [Security.AccessControl.InheritanceFlags]::ContainerInherit) -and $ace.PropagationFlags -eq 'None')) { $full = $true }
+    foreach ($ace in @(ReadRawRules $acl)) {
+      if ($ace.Sid -ne $sid.Value -or -not $ace.Allow) { throw 'principal' }
+      if (($ace.Flags -band 8) -ne 0) { throw 'inherit-only' }
+      if (($ace.Rights -band 2032127) -eq 2032127) {
+        if (-not $directory -or ($ace.Flags -band 15) -eq 3) { $full = $true }
       }
     }
     if (-not $full) { throw 'rights' }
@@ -78,7 +94,7 @@ try {
   [Console]::Out.Write('{"ok":true}')
 } catch {
   $code = 'internal'
-  if ($_.Exception.Message -cin @('path','volume','parent','reparse','ancestor-owner','ancestor-rights','kind','owner','null-dacl','inheritance','principal','inherit-only','rights','exists','operation')) { $code = $_.Exception.Message }
+  if ($_.Exception.Message -cin @('path','volume','parent','reparse','ancestor-owner','ancestor-rights','kind','owner','null-dacl','inheritance','principal','inherit-only','rights','exists','operation','ace-type','ace-flags','ace-mask')) { $code = $_.Exception.Message }
   [Console]::Out.Write('{"ok":false,"code":"' + $code + '"}')
   exit 1
 }
