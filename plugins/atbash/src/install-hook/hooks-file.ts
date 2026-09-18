@@ -311,7 +311,13 @@ function describeJsonError(error: unknown): string {
   if (position !== undefined) return `syntax error ${position}`;
   if (/end of JSON input/i.test(message)) return "unexpected end of input";
   const token = /Unexpected token '(.)'/.exec(message)?.[1];
-  return token === undefined ? "syntax error" : `syntax error near token '${token}'`;
+  if (token === undefined) return "syntax error";
+  // The token is one character of the file itself: a printable ASCII one is quoted, anything
+  // else (a bidi override, an escape, a line separator) is named by its code point so that no raw
+  // character from a hooks file - repository content at project scope - reaches the transcript.
+  return /^[\x20-\x7e]$/.test(token)
+    ? `syntax error near token '${token}'`
+    : `syntax error near U+${(token.codePointAt(0) ?? 0).toString(16).toUpperCase().padStart(4, "0")}`;
 }
 
 /** Parse and validate; anything outside the documented shape is refused, never repaired. */

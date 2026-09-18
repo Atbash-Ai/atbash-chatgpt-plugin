@@ -37,9 +37,14 @@ export interface RegistrationReport {
 }
 
 /** Text from the hooks file is rendered into the transcript only when it reads as plain text: no
- *  control characters and no format characters (bidi overrides, zero-width joiners and the like,
- *  which make a planted line read as something else), and bounded in length. */
-const OPAQUE_TEXT = /[\p{Cc}\p{Cf}]/u;
+ *  control characters, no format characters (bidi overrides, zero-width joiners and the like,
+ *  which make a planted line read as something else) and no line or paragraph separators (which
+ *  a rendered transcript breaks on), and bounded in length. */
+const OPAQUE_TEXT = /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/u;
+/** An own entry's path is echoed only when every character is one a path is made of - letters and
+ *  digits of any script, the separators and punctuation the installer itself accepts - so a
+ *  secret-shaped token ("--token=...", "key=...") or a URL query never reaches the transcript. */
+const PLAIN_PATH_TEXT = /^[\p{L}\p{N} _.:/+@()\\-]+$/u;
 const SHOWN_PATH_MAX_LENGTH = 512;
 
 /** A value from the hooks file, rendered for a warning: a finite number or a short string as it
@@ -61,7 +66,7 @@ function shape(value: unknown): string {
  *  interpreter half of its command is whatever the hooks file says - so an own path still has to
  *  read as plain text before it is echoed. */
 function shown(path: string, own: boolean): string {
-  return own && path.length <= SHOWN_PATH_MAX_LENGTH && !OPAQUE_TEXT.test(path)
+  return own && path.length <= SHOWN_PATH_MAX_LENGTH && PLAIN_PATH_TEXT.test(path)
     ? path
     : `a path of ${path.length} characters`;
 }
@@ -188,6 +193,8 @@ export interface RegistrationScope {
   hooksPath: string;
   registered: number;
   spawnable: number;
+  /** Atbash entries in this file the host would not run as the installer wrote them. */
+  degraded: number;
 }
 
 export interface RegistrationSummary {
@@ -222,6 +229,9 @@ export function summarizeRegistrations(
       hooksPath: report.hooksPath,
       registered: report.registered,
       spawnable: report.spawnable,
+      // Per scope too, so a wrapper reading the scopes cannot average a broken project-level
+      // entry away behind a healthy user-level one.
+      degraded: report.registered - report.spawnable,
     })),
     registered,
     spawnable,

@@ -51,8 +51,15 @@ async function main(): Promise<void> {
   // Exit 0 only when the agent is ready AND a hook is registered somewhere the host reads AND no
   // registered entry is a dead or narrowed one: a healthy user-level entry does not vouch for a
   // project-level entry the host may prefer, and the warning above names which one to fix.
+  // The uninspected shape has no `degraded` at all and is never exit 0: an inspection that failed
+  // says nothing about the gate, and a default of 0 there would read as "nothing degraded".
   process.exitCode =
-    status.ready && hookRegistration.enforcing && (hookRegistration.degraded ?? 0) === 0 ? 0 : 1;
+    status.ready &&
+    hookRegistration.inspected &&
+    hookRegistration.enforcing &&
+    hookRegistration.degraded === 0
+      ? 0
+      : 1;
 }
 
 void main();
