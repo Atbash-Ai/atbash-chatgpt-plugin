@@ -95,6 +95,11 @@ loaded Windows host; this is a fixture duration, not an onboarding benchmark or
 achievement of the speed goal. Permission-helper launch overhead still needs
 measurement and reduction without removing boundary checks.
 
+Bootstrap fixtures also clear inherited Node preload options before child startup.
+A harmless real preload is first proven executable, then required not to execute
+through the isolated runner. Resolver redirection and generation counters cannot
+establish isolation if unrelated preload code executes before them.
+
 Authenticated organization and policy selection, local configuration association,
 owner approval, independent chain readback and actual host trust/enforcement are
 separate requirements. A stored key or successful pairing is not sufficient to

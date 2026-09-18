@@ -87,8 +87,12 @@ async function run(
   onReady?: (child: ChildProcess) => void,
 ): Promise<ChildResult> {
   const env = Object.fromEntries(
-    Object.entries(process.env).filter(([name]) => !name.toUpperCase().startsWith("ATBASH_")),
+    Object.entries(process.env).filter(
+      ([name]) =>
+        !name.toUpperCase().startsWith("ATBASH_") && name.toUpperCase() !== "NODE_OPTIONS",
+    ),
   );
+  env.NODE_OPTIONS = "";
   return new Promise((done, reject) => {
     const child = spawn(
       process.execPath,
