@@ -26,7 +26,7 @@ codex plugin marketplace add Atbash-Ai/atbash-chatgpt-plugin --ref main
 
 Then open the Plugins Directory in the desktop app, select the Atbash AI marketplace, and install Atbash Safety. If you already registered another marketplace named `atbash-ai`, choose the source that points to this repository. Configure credentials before enabling and trusting its hook. Review the Atbash hook through `/hooks` and start a new task after installation.
 
-On Codex 0.154 or newer, installing the plugin does **not** activate its hook: Codex no longer loads hooks shipped inside a plugin. Register the hook at the user level with the installer described in the next section, or nothing is enforced.
+The inspected Codex CLI versions 0.154.0 and 0.155.0 report `plugin_hooks` as removed. Do not treat installing the plugin as hook activation. Use the user-level installer described below, then verify hook execution and enforcement on the actual host; 0.155.0 has not been tested for tool enforcement here.
 
 ## Plugin-hook support in the inspected Codex versions
 
