@@ -36,6 +36,7 @@ function access(path: string, mode: "inspect" | "grant" | "replace", value = "")
   const script = String.raw`
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
+[Console]::InputEncoding = [Text.UTF8Encoding]::new($false, $true)
 $request = [Console]::In.ReadToEnd() | ConvertFrom-Json
 $directory = [bool]([IO.File]::GetAttributes($request.path) -band [IO.FileAttributes]::Directory)
 $acl = if ($directory) { [IO.Directory]::GetAccessControl($request.path) } else { [IO.File]::GetAccessControl($request.path) }

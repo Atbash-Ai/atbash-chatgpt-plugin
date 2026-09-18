@@ -18,6 +18,16 @@ import {
 
 const TRUSTED_INSTALLER = "S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464";
 if (process.platform === "win32") {
+  test("Windows bootstrap ACL: Unicode path transport preserves the exact directory", async () => {
+    const fixture = await createFixture();
+    const directory = join(fixture, `private-${String.fromCharCode(0x5d0)}`);
+    preparePrivateWindowsDirectory(directory);
+    assert.equal((await stat(directory)).isDirectory(), true);
+    const file = join(directory, "marker");
+    await writeFile(file, "public fixture");
+    verifyPrivateWindowsStorage(directory, [file]);
+    assert.equal(await readFile(file, "utf8"), "public fixture");
+  });
   test("Windows bootstrap ACL batch: Unicode sibling is not the requested directory", async () => {
     const fixture = await createFixture();
     const directory = join(fixture, "private");

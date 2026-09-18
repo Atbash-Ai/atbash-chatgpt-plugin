@@ -7,6 +7,7 @@ const SCRIPT = String.raw`
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
 try {
+  [Console]::InputEncoding = [Text.UTF8Encoding]::new($false, $true)
   $request = [Console]::In.ReadToEnd() | ConvertFrom-Json
   if ($request.operation -ceq 'verify-storage') {
     $names = @($request.PSObject.Properties.Name)
