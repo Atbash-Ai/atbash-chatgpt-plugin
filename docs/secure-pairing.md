@@ -91,7 +91,7 @@ mutations from historical shipped defects.
 
 Status inspects supported synchronous catch-all registration syntax and local paths; it does not prove host trust, actual execution or fail-closed behavior. Restricted matchers, unsupported types, asynchronous entries and trailing/invalid shell syntax cannot establish its registration signal.
 
-The audited Codex0.154 host permits a hook transport failure or synchronous timeout. Local error-exit tests prove reporting and process termination only, not that a protected tool was blocked. Production protection/release remains blocked until a supported host or independent tool gate refuses a missing/failed decision, proven with a real tool execution marker. Do not label pairing completion or these local green suites as Protected.
+Host enforcement is unverified. The earlier claim that Codex consumed an exit-2 denial and permitted the tool could not be substantiated from retained markers and is withdrawn. Current official documentation supports exit-2 blocking. A fresh diagnostic was rejected by automatic approval review before hook/tool execution, so it is inconclusive. Local error-exit tests prove process behavior only. Live protection still requires a successful allow control and hook/tool markers proving refusal of denied or failed decisions on the actual host. Do not label pairing completion or local green suites as Protected.
 
 Registration status accepts only regular script/interpreter files and the canonical
 Node interpreter currently running status, with the installer's exact timeout.
