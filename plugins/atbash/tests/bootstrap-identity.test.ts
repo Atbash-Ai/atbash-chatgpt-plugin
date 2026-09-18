@@ -29,6 +29,11 @@ import {pathToFileURL} from 'node:url';
 const [home, mode] = process.argv.slice(1);
 if (dirname(resolve(home)).toLowerCase() !== resolve(os.homedir()).toLowerCase() ||
     !basename(home).startsWith('.atbash-bootstrap-fixture-')) throw new Error('Invalid fixture root');
+if (mode === 'diagnostic-exit') {
+  process.stdout.write('private-output-sentinel');
+  process.stderr.write('private-error-sentinel');
+  process.exit(9);
+}
 os.homedir = () => home;
 process.env.HOME = mode === 'home-mismatch' ? join(home, 'other') : home;
 if (mode === 'blank-env') process.env.ATBASH_AGENT_KEY = '';
@@ -372,6 +377,28 @@ async function run(
   );
   env.NODE_OPTIONS = "";
   return new Promise((done, reject) => {
+    const started = performance.now();
+    let phase = "starting";
+    let readyEvents = 0;
+    let stdoutBytes = 0;
+    let stderrBytes = 0;
+    let exitCode: number | null = null;
+    let exitSignal = "none";
+    let parsed = false;
+    const failure = () =>
+      new Error(
+        "Isolated bootstrap fixture failed; raw output withheld. " +
+          JSON.stringify({
+            phase,
+            readyEvents,
+            stdoutBytes,
+            stderrBytes,
+            exitCode,
+            exitSignal,
+            parsed,
+            elapsedMs: Math.round(performance.now() - started),
+          }),
+      );
     const child = spawn(
       process.execPath,
       ["--max-old-space-size=128", "--input-type=module", "--eval", CHILD, home, mode],
@@ -385,18 +412,20 @@ async function run(
       },
     );
     let stdout = "";
-    let stderrBytes = 0;
     child.on("message", (message) => {
       if (message === "claim-ready" || message === "acl-ready") {
+        readyEvents++;
         try {
           onReady?.(child);
         } catch {
           child.kill();
-          reject(new Error("Fixture checkpoint callback failed; raw output withheld."));
+          phase = "checkpoint-callback";
+          reject(failure());
         }
       }
     });
     child.stdout!.on("data", (data: Buffer) => {
+      stdoutBytes += data.length;
       stdout += data.toString("utf8");
       if (stdout.length > 4096) child.kill();
     });
@@ -404,26 +433,46 @@ async function run(
       stderrBytes += data.length;
       if (stderrBytes > 4096) child.kill();
     });
-    child.on("error", reject);
-    child.on("close", (code) => {
+    child.on("error", () => {
+      phase = "process-error";
+      reject(failure());
+    });
+    child.on("close", (code, signal) => {
+      exitCode = code;
+      exitSignal =
+        signal === null
+          ? "none"
+          : ["SIGTERM", "SIGKILL", "SIGABRT", "SIGSEGV"].includes(signal)
+            ? signal
+            : "other";
       void (async () => {
         try {
           // Do not print child errors or serialized key material on failure.
+          phase = "stderr-check";
           assert.equal(stderrBytes, 0, "Fixture stderr must be empty");
           if (onCrash) {
+            phase = "crash-exit";
             assert.equal(code, 73, "Crash must reach its explicit boundary exit");
             assert.equal(stdout, "", "Crash must not emit a normal return or secret output");
+            phase = "crash-marker";
             const marker = await readFile(join(home, ".bootstrap-crash.json"), "utf8");
             assert.ok(marker.length < 4096);
             const result = JSON.parse(marker) as CrashResult;
+            parsed = true;
+            phase = "crash-helper-exit";
             await helpersExited(result.helperPids);
+            phase = "crash-assertions";
             await onCrash(result);
             // The crash caller consumes only its marker, never a fabricated success.
             done();
             return;
           }
+          phase = "normal-exit";
           assert.equal(code, 0, "Isolated fixture process must complete");
+          phase = "result-parse";
           const result = JSON.parse(stdout) as ChildResult;
+          parsed = true;
+          phase = "helper-closure";
           assert.equal(
             result.helpersClosed,
             true,
@@ -431,7 +480,7 @@ async function run(
           );
           done(result);
         } catch {
-          reject(new Error("Isolated bootstrap fixture failed; raw output withheld."));
+          reject(failure());
         }
       })();
     });
@@ -551,6 +600,27 @@ if (process.platform === "win32") {
       assert.deepEqual(await readdir(home), []);
     });
   }
+
+  test("bootstrap failure diagnostics expose metadata but never child output", async () => {
+    const home = await createFixture();
+    await assert.rejects(run(home, "diagnostic-exit"), (error: unknown) => {
+      assert.ok(error instanceof Error);
+      const prefix = "Isolated bootstrap fixture failed; raw output withheld. ";
+      assert.ok(error.message.startsWith(prefix));
+      assert.equal(error.message.includes("private-output-sentinel"), false);
+      assert.equal(error.message.includes("private-error-sentinel"), false);
+      const metadata = JSON.parse(error.message.slice(prefix.length));
+      assert.equal(metadata.phase, "stderr-check");
+      assert.equal(metadata.exitCode, 9);
+      assert.equal(metadata.exitSignal, "none");
+      assert.equal(metadata.readyEvents, 0);
+      assert.equal(metadata.stdoutBytes, Buffer.byteLength("private-output-sentinel"));
+      assert.equal(metadata.stderrBytes, Buffer.byteLength("private-error-sentinel"));
+      assert.equal(metadata.parsed, false);
+      assert.ok(Number.isSafeInteger(metadata.elapsedMs) && metadata.elapsedMs >= 0);
+      return true;
+    });
+  });
 
   test("two real bootstrap processes publish exactly one identity", async () => {
     const home = await createFixture();

@@ -107,9 +107,22 @@ $actual = if ($directory) { [IO.Directory]::GetAccessControl($request.path) } el
       maxBuffer: 4096,
     },
   );
-  assert.equal(result.error, undefined);
-  assert.equal(result.status, 0, `Fixture ACL operation must succeed: ${result.stderr}`);
-  assert.match(result.stdout, /^[A-Za-z0-9+/]+=*$/);
+  // Startup failures can emit UTF-16 stderr despite the requested encoding.
+  // Raw output can contain NULs that corrupt JUnit; retain metadata only.
+  const details = JSON.stringify({
+    processError: result.error !== undefined,
+    status: result.status,
+    signaled: result.signal !== null,
+    stdoutBytes: Buffer.byteLength(result.stdout ?? ""),
+    stderrBytes: Buffer.byteLength(result.stderr ?? ""),
+  });
+  assert.equal(result.error === undefined, true, `Fixture ACL process must start: ${details}`);
+  assert.equal(result.status, 0, `Fixture ACL operation must succeed: ${details}`);
+  assert.equal(
+    /^[A-Za-z0-9+/]+=*$/.test(result.stdout),
+    true,
+    `Fixture ACL output must be a descriptor: ${details}`,
+  );
   return result.stdout;
 }
 

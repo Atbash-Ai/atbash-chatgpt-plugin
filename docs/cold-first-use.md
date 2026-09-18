@@ -254,3 +254,21 @@ the same zero-helper/no-mutation requirement. Fresh uninjected retries preserve
 the existing entries. These nine cases and a normal success control passed;
 junction coverage is specific to that reparse form, and metadata exceptions are
 injected error-handling checks rather than claims of actual disk failure.
+
+### Diagnostic-only test runner evidence
+
+The isolated bootstrap fixture reports fixed phase labels, child exit code/signal,
+readiness-event count, stdout/stderr byte counts, parse completion and elapsed time
+when a child fails. It never includes raw child output, exception details, key files
+or environment values. A real child writes synthetic private-output sentinels and
+exits unsuccessfully to check that diagnostic metadata survives while both sentinels
+remain withheld. Timeouts, assertions, the concurrency barrier and production code
+are unchanged. This improves failure diagnosis; it does not waive failed runs or
+establish live activation.
+
+The ACL fixture also reports only process-error presence, exit status, signal
+presence and output byte counts. A real Windows startup failure emitted UTF-16
+stderr containing NULs and invalidated the production JUnit report. Raw fixture
+output is now withheld from assertion messages; successful startup, zero exit
+status and valid descriptor output remain mandatory assertions. Original failed
+reports are preserved, not repaired or counted as passing evidence.
