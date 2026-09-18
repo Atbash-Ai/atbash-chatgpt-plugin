@@ -292,6 +292,12 @@ test("receipt DER guard enforces exact depth and node boundaries before decoding
   for (let i = 0; i < 11; i++) nested = tlv(0xa5, tlv(0x30, nested));
   assert.equal(hasBoundedEnrollmentDer(nested), true);
   assert.equal(hasBoundedEnrollmentDer(tlv(0xa5, tlv(0x30, nested))), false);
+  // An octet leaf contributes one constructed wrapper, allowing the exact
+  // 25-depth refusal to be tested without accepting non-GTV DER grammar.
+  let oddDepth: Buffer = wire(PcBuffer.alloc(0));
+  for (let i = 0; i < 11; i++) oddDepth = tlv(0xa5, tlv(0x30, oddDepth));
+  assert.equal(hasBoundedEnrollmentDer(oddDepth), true); // 23 constructed nodes
+  assert.equal(hasBoundedEnrollmentDer(tlv(0xa5, tlv(0x30, oddDepth))), false); // 25
   assert.equal(
     hasBoundedEnrollmentDer(
       tlv(
