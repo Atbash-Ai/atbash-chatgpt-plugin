@@ -162,6 +162,13 @@ test("receipt codec allows a fresh 32-byte nop when supplied RID matches the new
   refuses(bytes, { ...wanted, transactionRid: expected.transactionRid });
 });
 
+test("receipt codec binds a genuinely valid signature to the expected signer", async () => {
+  const { bytes, wanted } = await resigned(() => {});
+  assert.equal(verifyEnrollmentTransaction(bytes, wanted).valid, true);
+  assert.notEqual(wanted.sessionSigner, expected.sessionSigner);
+  refuses(bytes, { ...wanted, sessionSigner: expected.sessionSigner });
+});
+
 test("receipt codec refuses invalid signatures and signer/signature cardinality", () => {
   const tx = decode();
   tx.signatures![0]![0] = tx.signatures![0]![0]! ^ 1;
@@ -304,4 +311,24 @@ test("receipt DER guard enforces exact depth and node boundaries before decoding
     hasBoundedEnrollmentDer(Buffer.concat([Buffer.from([5, 0]), Buffer.from([5, 0])])),
     false,
   );
+});
+
+test("receipt DER guard rejects class and constructed-bit confusion before decoding", () => {
+  let nested: unknown = 1;
+  for (let i = 0; i < 60; i++) nested = [nested];
+  for (const raw of [nested, Array.from({ length: 257 }, () => 1)]) {
+    const bytes = wire(raw);
+    assert.equal(bytes[0], 0xa5);
+    assert.equal(hasBoundedEnrollmentDer(bytes), false);
+    for (const tag of [0x85, 0x25, 0x05, 0x65, 0xe5]) {
+      const changed = Buffer.from(bytes);
+      changed[0] = tag;
+      assert.equal(hasBoundedEnrollmentDer(changed), false, `Root tag ${tag}`);
+      refuses(changed);
+    }
+  }
+  // A context wrapper must contain its canonical universal inner type, not a
+  // primitive tag which the permissive underlying decoder reads as sequence.
+  const falseSequence = tlv(0xa5, tlv(0x10, wire(nested)));
+  assert.equal(hasBoundedEnrollmentDer(falseSequence), false);
 });
