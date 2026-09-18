@@ -124,3 +124,33 @@ owner approval, independent chain readback and actual host trust/enforcement are
 separate requirements. A stored key or successful pairing is not sufficient to
 label an agent Protected. End-to-end timing must be measured on the real installed
 and deployed flow, including an explicit breakdown of login and approval time.
+
+## Per-attempt Windows helper under verification
+
+The internal bootstrap now uses one owned PowerShell process for its permission
+operations. It retains the optional parent preparation, private directory
+preparation, early claim check and five distinct storage boundaries. Each request
+runs the shared permission-check body again. Nothing is cached across boundaries;
+native key generation, secret writes and SDK readback remain in Node.
+
+The public-only protocol has a random 128-bit session identifier, sequences 1–8
+and one request in flight. An exact canonical JSON grammar rejects duplicate and
+unknown request fields before parsing. Input is strict UTF-8 and incrementally
+bounded to 16 KiB per request and 128 KiB overall. Responses have one exact success
+serialization, at most 256 bytes each and 2 KiB overall. Any stderr, extra reply,
+wrong sequence, malformed data or process failure invalidates the attempt without
+retrying or restarting the helper.
+
+Requests expire after 20 seconds; helper lifetime is limited to 60 seconds without
+refreshing the deadline. Responses arriving after either deadline are refused.
+These limits do not cancel a blocked native SDK or filesystem call; expiration
+prevents the next transition when control returns. Cleanup is limited to the
+owned child and has a 2-second bound. Success requires a clean helper exit after
+the final readback check. Claims, staging and published identities remain intact
+on all failure paths.
+
+The first real create/restart/refused-retry fixture completed in 5.67 seconds and
+observed exactly one helper and all eight requests. This remains a local combined
+fixture duration, not an installed onboarding benchmark. Protocol, exit-order,
+timeout and interruption verification are still in progress; the full original
+crash/I/O/drift matrix and final reviews are required before integration.

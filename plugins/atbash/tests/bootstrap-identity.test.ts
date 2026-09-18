@@ -9,6 +9,7 @@ import { createFixture } from "./windows-acl-fixture.js";
 // Only this disposable child changes resolver inputs. Production has no test
 // root override or callbacks, and the parent's personal SDK root is never used.
 const CHILD = String.raw`
+import childProcess from 'node:child_process';
 import os from 'node:os';
 import fs from 'node:fs/promises';
 import {createRequire, syncBuiltinESMExports} from 'node:module';
@@ -20,6 +21,24 @@ if (dirname(resolve(home)).toLowerCase() !== resolve(os.homedir()).toLowerCase()
 os.homedir = () => home;
 process.env.HOME = mode === 'home-mismatch' ? join(home, 'other') : home;
 if (mode === 'blank-env') process.env.ATBASH_AGENT_KEY = '';
+const helpers = [];
+const helperRequests = [];
+const spawnHelper = childProcess.spawn;
+childProcess.spawn = (...args) => {
+  const child = spawnHelper(...args);
+  if (String(args[0]).toLowerCase().endsWith('powershell.exe')) {
+    const state = {closed:false};
+    helpers.push(state);
+    child.once('close', () => { state.closed = true; });
+    const write = child.stdin.write.bind(child.stdin);
+    child.stdin.write = (chunk, ...rest) => {
+      const request = JSON.parse(Buffer.from(chunk).toString('utf8'));
+      helperRequests.push({operation:request.operation,sequence:request.sequence});
+      return write(chunk, ...rest);
+    };
+  }
+  return child;
+};
 syncBuiltinESMExports();
 const native = createRequire(import.meta.url)('@atbash/sdk/native');
 const generate = native.generateKeypair;
@@ -68,7 +87,7 @@ try {
   else if (mode === 'override-path') result = await bootstrapWindowsIdentity({keyPath:''});
   else result = await bootstrapWindowsIdentity();
 } catch (error) { failed = true; message = error.message; }
-process.stdout.write(JSON.stringify({failed,message,result,generated,storageCalls,secretWrites,boundaries}));
+process.stdout.write(JSON.stringify({failed,message,result,generated,storageCalls,secretWrites,boundaries,helperCount:helpers.length,helpersClosed:helpers.every(h=>h.closed),helperRequests}));
 `;
 
 interface ChildResult {
@@ -79,6 +98,9 @@ interface ChildResult {
   storageCalls: number;
   secretWrites: number;
   boundaries: string[];
+  helperCount: number;
+  helpersClosed: boolean;
+  helperRequests: { operation: string; sequence: number }[];
 }
 
 async function run(
@@ -125,7 +147,9 @@ async function run(
         // Do not print child errors or serialized key material on failure.
         assert.equal(code, 0, "Isolated fixture process must complete");
         assert.equal(stderrBytes, 0, "Fixture stderr must be empty");
-        done(JSON.parse(stdout) as ChildResult);
+        const result = JSON.parse(stdout) as ChildResult;
+        assert.equal(result.helpersClosed, true, "Every owned helper must close before returning");
+        done(result);
       } catch {
         reject(new Error("Isolated bootstrap fixture failed; raw output withheld."));
       }
@@ -294,6 +318,20 @@ if (process.platform === "win32") {
     assert.equal(first.failed, false);
     assert.equal(first.generated, 1);
     assert.equal(first.secretWrites, 1);
+    assert.equal(first.helperCount, 1);
+    assert.deepEqual(
+      first.helperRequests,
+      [
+        "prepare-directory",
+        "prepare-directory",
+        "verify-file",
+        "verify-storage",
+        "verify-storage",
+        "verify-storage",
+        "verify-storage",
+        "verify-storage",
+      ].map((operation, index) => ({ operation, sequence: index + 1 })),
+    );
     assert.deepEqual(Object.keys(first.result ?? {}).sort(), ["pubkey", "state"]);
     assert.equal(first.result?.state, "created");
     assert.match(first.result?.pubkey ?? "", /^(02|03)[0-9a-f]{64}$/);

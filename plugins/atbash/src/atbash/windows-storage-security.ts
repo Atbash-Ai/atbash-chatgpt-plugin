@@ -3,12 +3,7 @@ import { isAbsolute, join } from "node:path";
 
 // This helper handles paths and ACLs only. Private key material must never enter
 // its input, argv, output or errors. Each call independently verifies current ACLs.
-const SCRIPT = String.raw`
-$ErrorActionPreference = 'Stop'
-$ProgressPreference = 'SilentlyContinue'
-try {
-  [Console]::InputEncoding = [Text.UTF8Encoding]::new($false, $true)
-  $request = [Console]::In.ReadToEnd() | ConvertFrom-Json
+export const WINDOWS_STORAGE_CHECKS = String.raw`
   $ordinal = [StringComparison]::Ordinal
   if ($request.operation -isnot [string] -or
       @(@('prepare-directory','verify-directory','verify-file','verify-storage') | Where-Object {
@@ -131,6 +126,15 @@ try {
     default { throw 'operation' }
   }
   CheckAncestors $path
+`;
+
+const SCRIPT = String.raw`
+$ErrorActionPreference = 'Stop'
+$ProgressPreference = 'SilentlyContinue'
+try {
+  [Console]::InputEncoding = [Text.UTF8Encoding]::new($false, $true)
+  $request = [Console]::In.ReadToEnd() | ConvertFrom-Json
+${WINDOWS_STORAGE_CHECKS}
   [Console]::Out.Write('{"ok":true}')
 } catch {
   $code = 'internal'

@@ -3,11 +3,7 @@ import type { BigIntStats } from "node:fs";
 import { link, lstat, open, realpath, type FileHandle } from "node:fs/promises";
 import { homedir } from "node:os";
 import { isAbsolute, join, resolve } from "node:path";
-import {
-  preparePrivateWindowsDirectory,
-  verifyPrivateWindowsStorage,
-  verifyPrivateWindowsFile,
-} from "./windows-storage-security.js";
+import { WindowsStorageSession } from "./windows-storage-session.js";
 
 export interface CreatedLocalIdentity {
   state: "created";
@@ -65,6 +61,7 @@ export async function bootstrapWindowsIdentity(): Promise<CreatedLocalIdentity> 
   let claim: FileHandle | undefined;
   let staging: FileHandle | undefined;
   let encoded: Buffer | undefined;
+  let permissions: WindowsStorageSession | undefined;
   try {
     // Reject runtime arguments too, including empty/blank key overrides.
     if (arguments.length !== 0 || process.platform !== "win32" || hasEnvironmentKey()) refuse();
@@ -82,6 +79,7 @@ export async function bootstrapWindowsIdentity(): Promise<CreatedLocalIdentity> 
 
     function inputsUnchanged(): void {
       if (process.env.HOME !== homeInput || homedir() !== osHome || hasEnvironmentKey()) refuse();
+      permissions?.assertHealthy();
     }
     async function storesAbsent(): Promise<void> {
       for (const path of stores) await absent(path);
@@ -93,17 +91,18 @@ export async function bootstrapWindowsIdentity(): Promise<CreatedLocalIdentity> 
     const homeIdentity = identity(await lstat(home, { bigint: true }), true);
     if (!samePath(await realpath(home), home)) refuse();
     inputsUnchanged();
+    permissions = new WindowsStorageSession();
     try {
       identity(await lstat(configParent, { bigint: true }), true);
     } catch (error) {
       if (!(error && typeof error === "object" && "code" in error && error.code === "ENOENT"))
         refuse();
       // Only this explicit immediate parent may be created; home already exists.
-      preparePrivateWindowsDirectory(configParent);
+      await permissions.prepareDirectory(configParent);
     }
     const parentIdentity = identity(await lstat(configParent, { bigint: true }), true);
     if (!samePath(await realpath(configParent), configParent)) refuse();
-    preparePrivateWindowsDirectory(directory);
+    await permissions.prepareDirectory(directory);
     const directoryIdentity = identity(await lstat(directory, { bigint: true }), true);
     if (!samePath(await realpath(directory), directory)) refuse();
     await storesAbsent();
@@ -112,7 +111,7 @@ export async function bootstrapWindowsIdentity(): Promise<CreatedLocalIdentity> 
     claim = await open(claimPath, "wx", 0o600);
     const claimIdentity = identity(await claim.stat({ bigint: true }), false, 1n);
     if (claimIdentity.size !== 0n) refuse();
-    verifyPrivateWindowsFile(claimPath);
+    await permissions.verifyFile(claimPath);
     sameObject(identity(await lstat(claimPath, { bigint: true }), false, 1n), claimIdentity);
     staging = await open(stagingPath, "wx+", 0o600);
     const stagingIdentity = identity(await staging.stat({ bigint: true }), false, 1n);
@@ -124,7 +123,7 @@ export async function bootstrapWindowsIdentity(): Promise<CreatedLocalIdentity> 
       sameObject(identity(await lstat(configParent, { bigint: true }), true), parentIdentity);
       sameObject(identity(await lstat(directory, { bigint: true }), true), directoryIdentity);
       if (!samePath(await realpath(directory), directory)) refuse();
-      verifyPrivateWindowsStorage(
+      await permissions!.verifyStorage(
         directory,
         published ? [claimPath, stagingPath, destination] : [claimPath, stagingPath],
       );
@@ -166,12 +165,14 @@ export async function bootstrapWindowsIdentity(): Promise<CreatedLocalIdentity> 
     await verifyBoundary(2n, true);
     await claim.close();
     claim = undefined;
+    await permissions.finish();
     return { state: "created", pubkey };
   } catch {
     // SDK/native errors can contain paths or input values. Never attach a cause.
     throw new Error(FAILURE);
   } finally {
     encoded?.fill(0);
+    await permissions?.dispose().catch(() => {});
     // Do not delete claims, staging files or published identities on any path.
     // These markers prevent a crash/retry from generating another identity.
     await staging?.close().catch(() => {});
