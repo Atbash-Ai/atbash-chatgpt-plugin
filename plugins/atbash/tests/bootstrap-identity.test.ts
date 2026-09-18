@@ -1,7 +1,16 @@
 import assert from "node:assert/strict";
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { createHash } from "node:crypto";
-import { lstat, mkdir, readFile, readdir, writeFile } from "node:fs/promises";
+import {
+  lstat,
+  mkdir,
+  readFile,
+  readdir,
+  readlink,
+  stat,
+  symlink,
+  writeFile,
+} from "node:fs/promises";
 import { join, resolve } from "node:path";
 import test from "node:test";
 import { addFixtureGrant, createFixture, readFixtureDescriptor } from "./windows-acl-fixture.js";
@@ -168,6 +177,16 @@ for (const method of ['lstat', 'realpath', 'link', 'open']) {
   const original = fs[method];
   fs[method] = async (...args) => {
     storageCalls++;
+    if (method === 'lstat') {
+      for (const code of ['EACCES','EIO']) {
+        const name = basename(String(args[0]));
+        if (['config.json','guard-client-key','atbash-client-key'].includes(name) &&
+            String(args[0]) === join(home,'.config','atbash',name) && mode === 'metadata-' + code + '-' + name) {
+          boundaries.push(code + '-' + name);
+          throw Object.assign(new Error('Synthetic fixture metadata refusal'),{code});
+        }
+      }
+    }
     if (method === 'open' && basename(String(args[0])) === '.onboarding-bootstrap-claim') {
       preClaimPinObserved = directoryObserved;
       await substitute('before-claim');
@@ -1131,6 +1150,59 @@ if (process.platform === "win32") {
         assert.equal(claim.nlink, kind === "claim" ? 2n : 1n);
         const before = await snapshotFixture(home);
         refused(await run(home));
+        assert.deepEqual(await snapshotFixture(home), before);
+      });
+    }
+  }
+
+  for (const name of ["config.json", "guard-client-key", "atbash-client-key"]) {
+    test(`bootstrap preserves dangling junction store ${name} without starting a helper`, async () => {
+      const home = await createFixture();
+      const directory = join(home, ".config", "atbash");
+      await mkdir(directory, { recursive: true });
+      const path = join(directory, name);
+      const target = join(home, "absent-junction-target");
+      await symlink(target, path, "junction");
+      const before = await lstat(path, { bigint: true });
+      const linkTarget = await readlink(path);
+      assert.equal(before.isSymbolicLink(), true);
+      await assert.rejects(stat(path), { code: "ENOENT" });
+      await assert.rejects(lstat(target), { code: "ENOENT" });
+      for (let attempt = 0; attempt < 2; attempt++) {
+        const result = await run(home);
+        refused(result);
+        assert.equal(result.helperCount, 0);
+        assert.deepEqual(result.boundaries, []);
+        const after = await lstat(path, { bigint: true });
+        assert.equal(after.isSymbolicLink(), true);
+        assert.equal(after.ino, before.ino);
+        assert.equal(after.dev, before.dev);
+        assert.equal(after.size, before.size);
+        assert.equal(after.nlink, before.nlink);
+        assert.equal(await readlink(path), linkTarget);
+        assert.deepEqual(await readdir(home), [".config"]);
+        assert.deepEqual(await readdir(join(home, ".config")), ["atbash"]);
+        assert.deepEqual(await readdir(directory), [name]);
+        await assert.rejects(lstat(target), { code: "ENOENT" });
+        await assert.rejects(stat(path), { code: "ENOENT" });
+      }
+    });
+    for (const code of ["EACCES", "EIO"]) {
+      test(`bootstrap refuses ${code} inspecting ${name} before any helper or mutation`, async () => {
+        const home = await createFixture();
+        const directory = join(home, ".config", "atbash");
+        await mkdir(directory, { recursive: true });
+        await writeFile(join(directory, name), "existing public marker", { flag: "wx" });
+        const before = await snapshotFixture(home);
+        const result = await run(home, `metadata-${code}-${name}`);
+        refused(result);
+        assert.equal(result.helperCount, 0);
+        assert.deepEqual(result.boundaries, [`${code}-${name}`]);
+        assert.deepEqual(await snapshotFixture(home), before);
+        const retry = await run(home);
+        refused(retry);
+        assert.equal(retry.helperCount, 0);
+        assert.deepEqual(retry.boundaries, []);
         assert.deepEqual(await snapshotFixture(home), before);
       });
     }

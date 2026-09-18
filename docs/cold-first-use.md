@@ -245,3 +245,12 @@ Remaining delivery gates are aggregate exact-commit review, refreshed negative
 proofs for production fixes, the full testing/development/production pipeline,
 and actual CLI/dashboard/installed-hook integration and enrollment verification.
 The internal bootstrap alone does not satisfy the live onboarding objective.
+
+Strict-absence coverage includes a real dangling NTFS junction at each of the
+three authoritative store paths: lstat observes the link while following stat
+returns ENOENT. Bootstrap must preserve the entry and target and launch no helper.
+Six precise metadata-error injections cover EACCES and EIO for each store, with
+the same zero-helper/no-mutation requirement. Fresh uninjected retries preserve
+the existing entries. These nine cases and a normal success control passed;
+junction coverage is specific to that reparse form, and metadata exceptions are
+injected error-handling checks rather than claims of actual disk failure.
