@@ -20,7 +20,7 @@ async function fixture(t: TestContext) {
   key.generateKeys();
   const identity = {
     pubkey: key.getPublicKey("hex", "compressed"),
-    privkey: key.getPrivateKey("hex"),
+    privkey: key.getPrivateKey("hex").padStart(64, "0"),
     orgName: "test-org",
     endpoint: PAIRING_ORIGIN,
     blockchainRid: PAIRING_CHAIN.rid,
@@ -57,9 +57,11 @@ async function fixture(t: TestContext) {
         ? PcBuffer.alloc(32, 7)
         : name === "get_org_policies"
           ? { default_policy_name: "safety" }
-          : name === "get_org_policy"
-            ? policy
-            : (remote.rows[name] ?? null);
+          : name === "get_org_agent_capacity"
+            ? { max_agents: 1, active_count: 0, total_count: 0 }
+            : name === "get_org_policy"
+              ? policy
+              : (remote.rows[name] ?? null);
     return new Response(new Uint8Array(gtv.encode(result as never)));
   });
   const start = async () => {

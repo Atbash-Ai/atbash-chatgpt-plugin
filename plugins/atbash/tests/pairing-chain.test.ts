@@ -4,6 +4,7 @@ import test from "node:test";
 import { gtv, Buffer as PcBuffer } from "postchain-client";
 import {
   PAIRING_CHAIN,
+  hasPairingCapacity,
   pairingQuery,
   resolvePairingPolicy,
   verifyPairingChain,
@@ -79,6 +80,48 @@ test("encodes query bytes and decodes HTTP response bytes through the actual GTV
     return new Response(new Uint8Array(gtv.encode(null)), { status: 200 });
   });
   assert.equal(await pairingQuery("get_agent_by_pubkey", { pubkey: key }), null);
+});
+
+test("capacity preflight preserves existing identities and fails closed on unavailable or malformed evidence", async () => {
+  const { intent } = fixture();
+  const owner = Buffer.alloc(32, 7);
+  let existing: unknown = null;
+  const capacity: Record<string, unknown> = { max_agents: 1, active_count: 0, total_count: 0 };
+  const query: PairingQuery = async (name, args) => {
+    if (name === "get_org_account_id") return owner;
+    if (name === "get_agent_by_pubkey") return existing;
+    assert.equal(name, "get_org_agent_capacity");
+    assert.deepEqual(args, { org_name: intent.organization, requester_pubkey: owner });
+    return capacity;
+  };
+  const check = () => hasPairingCapacity(intent.organization, intent.publicKey, query);
+  assert.equal(await check(), true);
+  capacity.active_count = 1;
+  capacity.total_count = 1;
+  assert.equal(await check(), false);
+  existing = { pubkey: Buffer.from(intent.publicKey, "hex"), org_name: intent.organization };
+  assert.equal(await check(), true);
+  existing = { pubkey: Buffer.from(intent.publicKey, "hex"), org_name: "other-org" };
+  await assert.rejects(check());
+  existing = undefined;
+  await assert.rejects(check());
+  existing = null;
+  capacity.max_agents = 0;
+  capacity.active_count = 0;
+  assert.equal(await check(), false);
+  for (const field of Object.keys(capacity)) {
+    const original = capacity[field];
+    for (const malformed of [-1, 0.5, "1", undefined, Number.MAX_SAFE_INTEGER + 1]) {
+      capacity[field] = malformed;
+      await assert.rejects(check());
+    }
+    capacity[field] = original;
+  }
+  await assert.rejects(
+    hasPairingCapacity(intent.organization, intent.publicKey, async () => {
+      throw new Error("Unavailable");
+    }),
+  );
 });
 
 test("accepts exact chain readback including GTV-decoded byte fields", async () => {

@@ -31,7 +31,7 @@ function fixture() {
     issuedAt: now,
     expiresAt: now + 60_000,
   };
-  return { intent, privateKey: key.getPrivateKey("hex"), now };
+  return { intent, privateKey: key.getPrivateKey("hex").padStart(64, "0"), now };
 }
 
 test("signs a domain-separated immutable intent using the local identity", () => {

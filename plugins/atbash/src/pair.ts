@@ -5,7 +5,7 @@ import { access } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { parseArgs } from "node:util";
-import { beginPairing } from "./atbash/pairing-session.js";
+import { beginPairing, PairingCapacityError } from "./atbash/pairing-session.js";
 
 async function openDashboard(url: string) {
   // Launch a concrete browser executable, never a shell/file association handler
@@ -114,10 +114,12 @@ async function main() {
   }
 }
 
-void main().catch(() => {
+void main().catch((error: unknown) => {
   // SDK errors may contain configuration details. Keep diagnostics bounded.
   process.stderr.write(
-    "Atbash pairing could not start or finish. Check local configuration, the installed runtime network, organization policy, and whether another pairing process is running.\n",
+    error instanceof PairingCapacityError
+      ? `${error.message}\n`
+      : "Atbash pairing could not start or finish. Check local configuration, the installed runtime network, organization policy, and whether another pairing process is running.\n",
   );
   process.exitCode = 1;
 });

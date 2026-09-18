@@ -21,6 +21,7 @@ type QueryName =
   | "get_org_account_id"
   | "get_org_policy"
   | "get_org_policies"
+  | "get_org_agent_capacity"
   | "get_agent_by_pubkey"
   | "get_agent_governance_hashes"
   | "get_agent_tier_info";
@@ -83,6 +84,34 @@ const hash = (value: string) => createHash("sha256").update(value, "utf8").diges
 // Rell booleans travel as GTV integer 0/1. Other truthy/falsy values are invalid.
 const yes = (value: unknown) => value === true || value === 1;
 const no = (value: unknown) => value === false || value === 0;
+
+/** Early UX check only: the registration transaction is the final capacity gate. */
+export async function hasPairingCapacity(
+  organization: string,
+  publicKey: string,
+  query: PairingQuery,
+): Promise<boolean> {
+  const owner = Buffer.from(
+    hex(await query("get_org_account_id", { org_name: organization })),
+    "hex",
+  );
+  if (owner.length !== 32) throw new Error("Organization not found on the pinned chain.");
+  const [capacityRaw, existing] = await Promise.all([
+    query("get_org_agent_capacity", { org_name: organization, requester_pubkey: owner }),
+    query("get_agent_by_pubkey", { pubkey: Buffer.from(publicKey, "hex") }),
+  ]);
+  const capacity = record(capacityRaw);
+  for (const field of ["max_agents", "active_count", "total_count"])
+    if (!Number.isSafeInteger(capacity[field]) || Number(capacity[field]) < 0)
+      throw new Error("Malformed organization capacity.");
+  if (existing !== null) {
+    const agent = record(existing);
+    if (hex(agent.pubkey) !== publicKey || agent.org_name !== organization)
+      throw new Error("Identity does not belong to the selected organization.");
+    return true;
+  }
+  return Number(capacity.active_count) < Number(capacity.max_agents);
+}
 
 export async function resolvePairingPolicy(
   organization: string,

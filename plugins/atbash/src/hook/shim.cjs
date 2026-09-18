@@ -110,8 +110,6 @@ function isDecision(text) {
 // "" from anywhere in-process must never swallow the real decision.
 let decided = false;
 let permitted = false;
-// Set once this load's decision has fully left the process.
-let delivered = false;
 // Set when this load found the channel taken and refused the call: the exit backstop below then
 // belongs to whoever owns the channel, and this load's must stay silent.
 let refused = false;
@@ -162,7 +160,7 @@ function answer(output) {
   // The bundle's deny is written synchronously to file descriptor 1 and the process ends at once
   // with exit 0: the deny is bounded under the smallest pipe a host hands a hook, so the write
   // completes into the pipe whether or not the host has read yet (a host that reads late gets
-  // every byte from the pipe), and `delivered` is true in the same turn - nothing that runs
+  // every byte from the pipe), and markDecisionOnStdout() records it in the same turn - nothing that runs
   // afterwards (a library calling process.exit, a second load of the shim) can find a decision
   // that is "queued but not out". An asynchronous write was tried and abandoned: its completion
   // callback never runs when in-process code exits in the same turn, which left a complete deny
@@ -174,7 +172,6 @@ function answer(output) {
   const text = denyJson(JSON.parse(output.trim()).hookSpecificOutput.permissionDecisionReason);
   try {
     writeDecisionSync(text);
-    delivered = true;
     markDecisionOnStdout();
     process.exit(0);
   } catch {
@@ -199,7 +196,6 @@ function exitBlocking(reason) {
   if (stdoutBytes === 0 && !decisionOnStdout()) {
     try {
       writeDecisionSync(denyJson(reason));
-      delivered = true;
       markDecisionOnStdout();
       try {
         fs.writeSync(2, reason + "\n");
@@ -258,7 +254,6 @@ function deny(reason) {
   decided = true;
   try {
     writeDecisionSync(denyJson(reason));
-    delivered = true;
     markDecisionOnStdout();
     process.exit(0);
   } catch {
@@ -322,7 +317,6 @@ process.on("exit", () => {
   decided = true;
   try {
     writeDecisionSync(denyJson("Atbash ERROR: the hook ended without a decision."));
-    delivered = true;
     markDecisionOnStdout();
     process.exitCode = 0;
   } catch {
@@ -370,7 +364,6 @@ function refuseChannel() {
   decided = true;
   try {
     writeDecisionSync(denyJson(reason));
-    delivered = true;
     markDecisionOnStdout();
     process.exitCode = 0;
   } catch {

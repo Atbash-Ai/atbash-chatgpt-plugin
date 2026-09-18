@@ -64,7 +64,7 @@ function signedFixture() {
       issuedAt: Date.now(),
       expiresAt: Date.now() + 30_000,
     },
-    key.getPrivateKey("hex"),
+    key.getPrivateKey("hex").padStart(64, "0"),
   );
 }
 async function fixture(verify: (signal: AbortSignal) => Promise<boolean> = async () => false) {

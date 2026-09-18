@@ -10,7 +10,7 @@ import { PAIRING_ORIGIN, signPairingIntent } from "../src/atbash/pairing-intent.
 function signedFixture() {
   const key = createECDH("secp256k1");
   key.generateKeys();
-  const secret = key.getPrivateKey("hex");
+  const secret = key.getPrivateKey("hex").padStart(64, "0");
   const signed = signPairingIntent(
     {
       version: 1,

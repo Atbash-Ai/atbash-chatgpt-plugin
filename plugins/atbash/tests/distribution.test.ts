@@ -83,6 +83,7 @@ test("marketplace runtime ships every entry point with the mode the build sets",
     "runtime/atbash-native.cjs": "100644",
     "runtime/index.cjs": "100644",
     "runtime/install-hook.cjs": "100755",
+    "runtime/pair.cjs": "100755",
     "runtime/pre-tool-use.cjs": "100644",
     "runtime/pre-tool-use-main.cjs": "100755",
     "runtime/status.cjs": "100755",
@@ -109,12 +110,23 @@ test("marketplace runtime ships every entry point with the mode the build sets",
   // Each bundled entry point starts with the hashbang the build preserves; the shim does not.
   for (const path of [
     "runtime/install-hook.cjs",
+    "runtime/pair.cjs",
     "runtime/pre-tool-use-main.cjs",
     "runtime/status.cjs",
   ]) {
     assert.match(readFileSync(path, "utf8"), /^#!\/usr\/bin\/env node\n/, path);
   }
   assert.doesNotMatch(readFileSync("runtime/pre-tool-use.cjs", "utf8"), /^#!/);
+});
+
+test("marketplace pairing command can explain usage without reading local credentials", () => {
+  const result = spawnSync(process.execPath, ["runtime/pair.cjs", "--help"], {
+    encoding: "utf8",
+    env: { ...process.env, ATBASH_PRIVATE_KEY: "invalid", ATBASH_ORG_NAME: "" },
+  });
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /Atbash local pairing/);
+  assert.match(result.stdout, /Private keys stay local/);
 });
 
 test("marketplace package includes the setup skill", () => {

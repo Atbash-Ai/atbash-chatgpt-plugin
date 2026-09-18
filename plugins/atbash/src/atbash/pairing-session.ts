@@ -1,6 +1,7 @@
 import { randomBytes } from "node:crypto";
 import {
   createPairingQuery,
+  hasPairingCapacity,
   PAIRING_TARGETS,
   resolveDefaultPairingPolicy,
   resolvePairingPolicy,
@@ -9,6 +10,14 @@ import {
 import { signPairingIntent, type PairingIntent } from "./pairing-intent.js";
 import { startPairingServer } from "./pairing-server.js";
 import { openPairingState } from "./pairing-state.js";
+
+export class PairingCapacityError extends Error {
+  constructor() {
+    super(
+      "This organization has no available active-agent slot. Select an organization with capacity before restarting pairing.",
+    );
+  }
+}
 
 export interface PairingIdentity {
   readonly pubkey: string;
@@ -48,6 +57,8 @@ export async function beginPairing(
         "This identity has enrollment state for another organization or network. Review that state before proceeding.",
       );
     const query = createPairingQuery(origin, store.signal);
+    if (!(await hasPairingCapacity(organization, client.pubkey, query)))
+      throw new PairingCapacityError();
     const policyName =
       options.policyName ??
       previous?.signed.intent.policyName ??
