@@ -6,6 +6,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { parseArgs } from "node:util";
 import { beginPairing, PairingCapacityError } from "./atbash/pairing-session.js";
+import { resolveOrgName } from "./atbash/guard.js";
 
 async function openDashboard(url: string) {
   // Launch a concrete browser executable, never a shell/file association handler
@@ -73,7 +74,11 @@ async function main() {
   }
   // Credential resolution and signing stay inside this local process. Never
   // print client/config objects or accept a key in command-line arguments.
-  const client = Atbash.fromConfig({ failClosed: true });
+  const orgName = resolveOrgName();
+  const client = Atbash.fromConfig({
+    failClosed: true,
+    ...(orgName === undefined ? {} : { orgName }),
+  });
   const pairing = await beginPairing(client, {
     stateRoot: join(homedir(), ".config", "atbash", "pairing"),
     ...(values.policy ? { policyName: values.policy } : {}),

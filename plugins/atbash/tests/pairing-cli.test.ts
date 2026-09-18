@@ -12,7 +12,12 @@ interface Trace {
   browser: number;
   server: number;
   network: number;
-  queries: Array<{ name: string; organization: string | null; publicKey: string | null; url: string }>;
+  queries: Array<{
+    name: string;
+    organization: string | null;
+    publicKey: string | null;
+    url: string;
+  }>;
 }
 
 function invokePairing(fileOrg?: string, envOrg?: string) {
@@ -25,7 +30,9 @@ function invokePairing(fileOrg?: string, envOrg?: string) {
   const identity = createECDH("secp256k1");
   identity.generateKeys();
   const fixtureKey = identity.getPrivateKey("hex");
-  const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("ATBASH_")));
+  const env = Object.fromEntries(
+    Object.entries(process.env).filter(([key]) => !key.toUpperCase().startsWith("ATBASH_")),
+  );
   Object.assign(env, {
     NODE_OPTIONS: "",
     PAIR_TEST_ROOT: fixtureRoot,
@@ -35,11 +42,23 @@ function invokePairing(fileOrg?: string, envOrg?: string) {
     ATBASH_DEBUG: "0",
     ...(envOrg === undefined ? {} : { ATBASH_ORG_NAME: envOrg }),
   });
-  const result = spawnSync(process.execPath, ["--require", resolve("tests/pairing-cli-preload.cjs"), "dist/pair.cjs"], {
-    cwd: process.cwd(), env, encoding: "utf8", timeout: 30_000, windowsHide: true,
-  });
+  const result = spawnSync(
+    process.execPath,
+    ["--require", resolve("tests/pairing-cli-preload.cjs"), "dist/pair.cjs"],
+    {
+      cwd: process.cwd(),
+      env,
+      encoding: "utf8",
+      timeout: 30_000,
+      windowsHide: true,
+    },
+  );
   // Never place the generated fixture key in assertion diagnostics.
-  assert.equal(result.stdout.includes(fixtureKey) || result.stderr.includes(fixtureKey), false, "No fixture credential output");
+  assert.equal(
+    result.stdout.includes(fixtureKey) || result.stderr.includes(fixtureKey),
+    false,
+    "No fixture credential output",
+  );
   assert.equal(result.error, undefined, "CLI must finish without a spawn error or timeout");
   assert.equal(result.status, 1, "Controlled capacity/config refusal must exit 1");
   assert.equal(readFileSync(configPath, "utf8"), config, "Existing configuration is preserved");
@@ -52,16 +71,31 @@ function invokePairing(fileOrg?: string, envOrg?: string) {
 }
 
 for (const scenario of [
-  { name: "file organization is resolved and trimmed", file: "  file-org  ", env: undefined, expected: "file-org" },
-  { name: "explicit environment organization takes precedence", file: "file-org", env: "  env-org  ", expected: "env-org" },
+  {
+    name: "file organization is resolved and trimmed",
+    file: "  file-org  ",
+    env: undefined,
+    expected: "file-org",
+  },
+  {
+    name: "explicit environment organization takes precedence",
+    file: "file-org",
+    env: "  env-org  ",
+    expected: "env-org",
+  },
 ]) {
   test(`packaged pairing CLI: ${scenario.name}`, () => {
     const { result, trace, publicKey } = invokePairing(scenario.file, scenario.env);
     assert.match(result.stderr, /This organization has no available active-agent slot/);
-    assert.deepEqual(trace.queries.map(q => q.name).sort(), ["get_agent_by_pubkey", "get_org_account_id", "get_org_agent_capacity"].sort());
-    for (const q of trace.queries.filter(q => q.organization !== null)) assert.equal(q.organization, scenario.expected);
-    assert.equal(trace.queries.find(q => q.name === "get_agent_by_pubkey")?.publicKey, publicKey);
-    if (scenario.env === undefined) assert.ok(trace.configReads > 0, "Real SDK config resolution was exercised");
+    assert.deepEqual(
+      trace.queries.map((q) => q.name).sort(),
+      ["get_agent_by_pubkey", "get_org_account_id", "get_org_agent_capacity"].sort(),
+    );
+    for (const name of ["get_org_account_id", "get_org_agent_capacity"])
+      assert.equal(trace.queries.find((q) => q.name === name)?.organization, scenario.expected);
+    assert.equal(trace.queries.find((q) => q.name === "get_agent_by_pubkey")?.publicKey, publicKey);
+    if (scenario.env === undefined)
+      assert.ok(trace.configReads > 0, "Real SDK config resolution was exercised");
   });
 }
 

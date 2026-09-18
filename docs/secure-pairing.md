@@ -10,6 +10,11 @@ Development builds also provide `dist/pair.cjs`. It uses the existing SDK config
 directly. An existing local identity, organization and organization policy are
 required; cold account/configuration setup is not automated yet. Optional
 `--policy`, `--name` and `--purpose` arguments contain public metadata only.
+The helper resolves the organization with the same SDK configuration precedence
+as the status command: `ATBASH_ORG_NAME` overrides the local configuration.
+Surrounding whitespace is trimmed; a missing or blank organization is rejected
+before chain queries, callback-server startup or browser launch. SDK 0.7.1
+requires the resolved organization to be passed explicitly to `fromConfig`.
 The command is implemented locally, **not released or activated**:
 
 - `pairing-intent.ts` signs a fixed, domain-separated tuple with the local
