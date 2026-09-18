@@ -172,3 +172,21 @@ One subsequent local sample measured 3.284 seconds for a cold bootstrap subproce
 (including Node/module startup), of which 1.231 seconds was inside the bootstrap
 function including helper startup and shutdown. This sample is not live enrollment
 or an installed-runtime benchmark and does not establish a latency guarantee.
+
+Abrupt parent-process interruption is now tested separately from helper failure.
+Ten isolated fixture processes exit with the exact checkpoint code after claim
+creation, empty-stage creation, native generation, a real partial write, the full
+write, fsync, close, publication, SDK readback, and immediately before publication.
+The partial-write case verifies the bytes are a proper nonempty prefix before
+exiting. Each case retains the real claim and any staging/published files; a fresh
+process must refuse generation, writing and publication, preserving file identity,
+link count, size and content hash. Published identities must still load through
+the real SDK. Public-only markers establish checkpoint reachability; missing
+markers, unexpected exits or unconfirmed helper disappearance fail the tests.
+The helper PID probe observes process existence only and does not terminate it.
+
+The ten crash cases and the existing native success/restart/refused-retry control
+passed together (11 executed, zero failures or skips). This is focused evidence;
+the remaining I/O exceptions, substitution/drift cases, full-suite verification
+and live enrollment are still required. No onboarding CLI, installed hook or
+personal identity is changed by these tests.
