@@ -1269,6 +1269,37 @@ test("install-hook: an entry whose other platform's spelling names our script is
   }
 });
 
+test("install-hook: status refuses restricted or unsupported registrations as enforcing", async () => {
+  const { inspectRegistration, summarizeRegistrations } = await import("../src/install-hook/registration.js");
+  const home = tempHome();
+  try {
+    const hooksPath = join(home, "hooks.json");
+    const original = buildAtbashEntry(REAL_HOOK_SCRIPT, process.platform, NODE_PATH);
+    const check = (group: unknown) => {
+      writeFileSync(hooksPath, JSON.stringify({ hooks: { PreToolUse: [group] } }));
+      return summarizeRegistrations([inspectRegistration(hooksPath, IDENTITY)]);
+    };
+    assert.equal(check(original).enforcing, true);
+    const hook = original.hooks[0]!;
+    for (const bad of [
+      { ...original, matcher: "NeverThisTool" },
+      { ...original, matcher: undefined },
+      { ...original, hooks: [{ ...hook, type: "prompt" }] },
+      { ...original, hooks: [{ ...hook, async: true }] },
+      { ...original, hooks: [{ ...hook, command: `${hook.command} ; echo extra`, commandWindows: `${hook.commandWindows ?? hook.command} ; echo extra` }] },
+      ...(WIN32 ? [{ ...original, hooks: [{ ...hook, command: hook.command.replace(/^& /, ""), commandWindows: hook.commandWindows?.replace(/^& /, "") }] }] : []),
+    ]) {
+      const result = check(bad);
+      assert.equal(result.registered, 1, "ownership alone remains distinct from applicability");
+      assert.equal(result.spawnable, 0);
+      assert.equal(result.enforcing, false);
+      assert.ok(result.warnings.length > 0);
+    }
+  } finally {
+    rmSync(home, { force: true, recursive: true });
+  }
+});
+
 test("install-hook: status reports a registration whose interpreter or script no longer exists", async () => {
   // Loaded here, not at the top: registration.js postdates the before-SHAs the proofs of the
   // older installer fixes carry this file into, and an ESM named import of a missing export fails

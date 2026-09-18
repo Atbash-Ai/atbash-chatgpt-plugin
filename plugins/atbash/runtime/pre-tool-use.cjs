@@ -298,7 +298,7 @@ function denyJson(reason) {
 // exits 0 with an empty stdout, and the host reads a permit. So the last word is here: at exit,
 // no decision and no permit is a deny written synchronously with exit 0; a decision whose stdout
 // write errored (the host went away) or never drained (in-process code ended the process first)
-// is a blocking exit code rather than a permit-shaped 0; a permit stays silence. What this cannot
+// is an error exit code, which Codex 0.154 may permit; a permit stays silence. What this cannot
 // cover: process.abort or a signal from the native addon ends the process without running exit
 // listeners (a non-0/2 exit, which the host treats as non-blocking).
 process.on("exit", () => {

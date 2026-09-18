@@ -10,6 +10,7 @@ import { isAbsolute } from "node:path";
 
 import {
   HooksFileRefusal,
+  buildAtbashEntry,
   isAtbashHook,
   isAtbashLookalike,
   parseHookCommand,
@@ -89,6 +90,21 @@ export function inspectRegistration(
         report.warnings.push(
           `${label} names a hook script that no longer exists (${parsed.script}); re-run install-hook.cjs from the plugin's current location.`,
         );
+      }
+      if (spawnable) {
+        let supported = false;
+        try {
+          const expected = buildAtbashEntry(parsed.script, identity.platform, parsed.interpreter!).hooks[0];
+          supported = group.matcher === "*" && hook.type === "command" && hook.async !== true &&
+            (identity.platform !== "win32" || /\.exe$/i.test(parsed.interpreter!)) &&
+            (spelled === expected?.command || spelled === expected?.commandWindows);
+        } catch {
+          // Unsupported shell syntax cannot establish an applicable registration.
+        }
+        if (!supported) {
+          spawnable = false;
+          report.warnings.push(`${label} is not a supported synchronous command covering all tools; re-run install-hook.cjs.`);
+        }
       }
       if (spawnable) report.spawnable += 1;
     }

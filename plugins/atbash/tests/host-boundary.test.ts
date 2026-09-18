@@ -736,11 +736,11 @@ test("a permit followed by a lingering handle is still denied at the deadline", 
   }
 });
 
-test("a bundle deny that arrives after the host closed stdout is a blocking exit, never a permit", async () => {
+test("a bundle deny after stdout closes exits with a transport error; host blocking is unverified", async () => {
   // The host has gone away (its read end is closed) when the bundle answers. The write fails
   // asynchronously: before the callback existed, nothing threw, nothing was written, the loop
   // drained and the process ended 0 with an empty stdout - a permit. Now the callback's error is a
-  // blocking exit with the reason on stderr. (A stream the bundle itself destroyed is not the same
+  // transport-error exit with the reason on stderr; this does not prove Codex blocks. (A stream the bundle itself destroyed is not the same
   // case: on Windows stdio pipes stay writable after destroy() and the deny is simply delivered.)
   const dir = withDamagedRuntime((d) => {
     writeFileSync(
@@ -1133,7 +1133,7 @@ test("a small deny to a host that never reads is delivered into the pipe and the
   }
 });
 
-test("a transport that never accepts the decision ends with a blocking exit, never a permit", async () => {
+test("a transport that never accepts the decision exits with an error; Codex may permit", async () => {
   // Defence in depth behind the byte bound: should the synchronous write to fd 1 never be
   // accepted (a full non-blocking pipe answers EAGAIN; here the transport is replaced at the
   // file-descriptor level so it answers EAGAIN for good), the retry gives up within about a

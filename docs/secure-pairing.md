@@ -86,3 +86,9 @@ Inherited installer regression verification includes a deterministic reused-inod
 case alongside real filesystem tests, so Windows inode allocation cannot conceal
 a missing change-time comparison. Review evidence distinguishes explicit guard
 mutations from historical shipped defects.
+
+## Host enforcement prerequisite
+
+Status inspects supported synchronous catch-all registration syntax and local paths; it does not prove host trust, actual execution or fail-closed behavior. Restricted matchers, unsupported types, asynchronous entries and trailing/invalid shell syntax cannot establish its registration signal.
+
+The audited Codex0.154 host permits a hook transport failure or synchronous timeout. Local error-exit tests prove reporting and process termination only, not that a protected tool was blocked. Production protection/release remains blocked until a supported host or independent tool gate refuses a missing/failed decision, proven with a real tool execution marker. Do not label pairing completion or these local green suites as Protected.
