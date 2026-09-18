@@ -11,11 +11,23 @@ import {
 } from "./windows-acl-fixture.js";
 import {
   preparePrivateWindowsDirectory,
+  verifyPrivateWindowsDirectory,
   verifyPrivateWindowsFile,
 } from "../src/atbash/windows-storage-security.js";
 
 const TRUSTED_INSTALLER = "S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464";
 if (process.platform === "win32") {
+  test("Windows bootstrap ACL: directory verification never creates or repairs storage", async () => {
+    const fixture = await createFixture();
+    const missing = join(fixture, "absent");
+    assert.throws(() => verifyPrivateWindowsDirectory(missing), /cannot be verified/);
+    await assert.rejects(stat(missing), { code: "ENOENT" });
+    const existing = join(fixture, "inherited");
+    await mkdir(existing);
+    const before = readFixtureDescriptor(existing);
+    assert.throws(() => verifyPrivateWindowsDirectory(existing), /cannot be verified/);
+    assert.equal(readFixtureDescriptor(existing), before);
+  });
   const refusedDescriptors: DescriptorCase[] = [
     "object",
     "null",

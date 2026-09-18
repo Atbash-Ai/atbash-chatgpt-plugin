@@ -2,9 +2,11 @@
 
 The goal is to remove manual key handling from first-use onboarding while keeping
 the identity local and preserving every existing SDK identity. This checkout
-contains an internal Windows permissions foundation only. It does not create a
-key, change SDK configuration, enroll an agent or activate a hook, and is not
-called by the pairing command or shipped runtime.
+contains an internal Windows permissions helper and a create-only identity
+bootstrap function. Neither is called by the pairing command or shipped runtime.
+Bootstrap is an explicit local action; importing its module does not create an
+identity. It does not change organization configuration, enroll an agent or
+activate a hook.
 
 ## Storage permissions
 
@@ -63,12 +65,35 @@ the hosted Windows job has passed; its actual run is a separate delivery gate.
 
 ## Remaining bootstrap and onboarding work
 
-Before this helper is integrated, bootstrap still needs strict absence checks for
-config.json, guard-client-key and atbash-client-key; environment/key-path conflict
-handling; one exclusive setup claim; verified staging identity; durable complete
-writes and publication without replacement; actual SDK readback; race/crash tests;
-and recovery that never silently generates a replacement identity. Existing keys
-and even empty or malformed configuration must remain untouched.
+The initial bootstrap checks strict absence of config.json, guard-client-key and
+atbash-client-key before changing storage. It refuses runtime arguments, even
+blank key/path overrides, an environment key even when blank, or disagreement
+between HOME and the OS home. Only a missing immediate .config parent and the
+private atbash directory can be created; arbitrary ancestors are not created.
+
+An exclusive fixed claim coordinates bootstrap attempts. An exclusive empty
+staging file receives real ACL verification before native SDK key generation.
+Bigint device/inode values, regular-file types, link counts, resolver inputs and
+store absence are rechecked at publication boundaries. The complete JSON write
+is synced and closed before an NTFS hard link publishes guard-client-key without
+replacement. Explicit-path SDK readback must derive the same public identity.
+Only the public key and created state are returned; failures have a bounded
+generic message without SDK exception causes.
+
+Claims and staging files are retained on success and failure. Bootstrap never
+breaks a stale claim or deletes a partial/published identity. Existing-identity
+onboarding and recovery remain separate work. This cooperative claim cannot
+atomically exclude older SDKs or other same-user processes writing another store;
+observed drift refuses success and never deletes either identity.
+
+The first focused cases cover import behavior, blank environment/override inputs,
+HOME mismatch, empty/malformed existing stores, native creation, SDK restart
+readback and replacement refusal. Concurrency, crash interruption, metadata/ACL
+substitution and injected publication failures still need verification before
+integration. The initial success/restart/retry test took about 30 seconds on a
+loaded Windows host; this is a fixture duration, not an onboarding benchmark or
+achievement of the speed goal. Permission-helper launch overhead still needs
+measurement and reduction without removing boundary checks.
 
 Authenticated organization and policy selection, local configuration association,
 owner approval, independent chain readback and actual host trust/enforcement are

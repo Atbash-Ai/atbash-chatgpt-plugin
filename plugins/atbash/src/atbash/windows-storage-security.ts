@@ -88,6 +88,7 @@ try {
       CheckPrivate $path $true
     }
     'verify-file' { CheckPrivate $path $false }
+    'verify-directory' { CheckPrivate $path $true }
     default { throw 'operation' }
   }
   CheckAncestors $path
@@ -100,7 +101,10 @@ try {
 }
 `;
 
-function check(operation: "prepare-directory" | "verify-file", path: string): void {
+function check(
+  operation: "prepare-directory" | "verify-directory" | "verify-file",
+  path: string,
+): void {
   if (process.platform !== "win32") throw new Error("Windows private storage is unsupported here.");
   const systemRoot = process.env.SystemRoot;
   if (!systemRoot || !isAbsolute(systemRoot) || !isAbsolute(path))
@@ -134,4 +138,8 @@ export function preparePrivateWindowsDirectory(path: string): void {
 
 export function verifyPrivateWindowsFile(path: string): void {
   check("verify-file", path);
+}
+
+export function verifyPrivateWindowsDirectory(path: string): void {
+  check("verify-directory", path);
 }
