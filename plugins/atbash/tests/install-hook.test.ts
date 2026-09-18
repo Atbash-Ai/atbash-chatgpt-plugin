@@ -1,13 +1,15 @@
 /**
  * The user-level hook installer, driven against real files in os.tmpdir() through node's fs API
  * (never a shell: the workspace guard refuses shell writes to any file named hooks.json, and the
- * installer is the product under test, not a shell). No mocks: the library is exercised on real
+ * installer is the product under test, not a shell). The library is exercised on real
  * temporary directories, and the BUILT installer (dist and the committed runtime) is spawned as
  * a user would run it. Where a case is OS-specific (symlink kinds, mode bits) each OS asserts the
- * behaviour that applies to it; nothing is skipped.
+ * behaviour that applies to it; nothing is skipped. One launch-boundary test observes the forbidden
+ * document launch with a stub so its negative proof cannot open an application chooser.
  */
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
+import childProcess, { spawnSync } from "node:child_process";
+import { syncBuiltinESMExports } from "node:module";
 import {
   chmodSync,
   copyFileSync,
@@ -1003,7 +1005,7 @@ test("install-hook: the registered command string is executable by the host shel
   const home = tempHome();
   try {
     // An interpreter that exists, is absolute and passes the allowlist, but is not a program.
-    const fakeNode = join(home, "fake-node");
+    const fakeNode = join(home, WIN32 ? "fake-node.exe" : "fake-node");
     writeFileSync(fakeNode, "not a program\n");
     const broken = buildAtbashEntry(REAL_HOOK_SCRIPT, process.platform, realpathSync(fakeNode));
     verifyEntryRoundTrip(broken, REAL_HOOK_SCRIPT, realpathSync(fakeNode), process.platform);
@@ -1067,6 +1069,31 @@ test("install-hook: the registered command string is executable by the host shel
   } finally {
     rmSync(home, { force: true, recursive: true });
   }
+});
+
+test("install-hook: Windows document interpreters are refused before starting a shell", (t) => {
+  let calls = 0;
+  const stdout = JSON.stringify({ hookSpecificOutput: { permissionDecision: "deny" } });
+  // Observe only the forbidden launch boundary. The existing tests above still
+  // run the real host shell with valid and invalid native executables.
+  const stub = t.mock.method(childProcess, "spawnSync", () => {
+    calls++;
+    return { pid: 0, output: ["", stdout, ""], stdout, stderr: "", status: 0, signal: null };
+  });
+  syncBuiltinESMExports();
+  t.after(() => {
+    stub.mock.restore();
+    syncBuiltinESMExports();
+  });
+  for (const suffix of ["", ".txt", ".cjs", ".cmd"]) {
+    const entry = buildAtbashEntry(
+      "C:\\Atbash\\pre-tool-use.cjs",
+      "win32",
+      `C:\\Atbash\\fake-node${suffix}`,
+    );
+    assert.throws(() => probeRegisteredCommand(entry, "win32"), /absolute native \.exe path/);
+  }
+  assert.equal(calls, 0);
 });
 
 test("install-hook: a file replaced by another file with the same bytes is noticed before the rename", () => {

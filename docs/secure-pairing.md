@@ -75,3 +75,9 @@ six low-severity dependency entries. This adapter uses its GTV codec only;
 intent signing uses `node:crypto`. The security reviewer found no vulnerable
 Elliptic signing path in these modules. Reassess if Postchain signing/ECDH is
 introduced; the dependency audit is not clean.
+
+On Windows, installer probes reject document-shaped interpreters before starting
+a shell. Node must use an absolute native .exe path. The invalid-interpreter
+fixture also uses .exe, preventing Windows application-association dialogs while
+retaining real host-shell execution checks. The refusal regression observes the
+launch boundary without invoking a document handler.

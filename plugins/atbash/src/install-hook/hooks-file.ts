@@ -29,7 +29,7 @@ import {
 } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
-import { basename, dirname, isAbsolute, join } from "node:path";
+import { basename, dirname, isAbsolute, join, win32 } from "node:path";
 
 export const HOOK_SCRIPT = "pre-tool-use.cjs";
 export const HOOK_MATCHER = "*";
@@ -445,6 +445,14 @@ function runProbe(command: string, platform: NodeJS.Platform, timeoutMs: number)
       `the registered command could not be executed by the host shell: ${reason} (command: ${command})`,
     );
   };
+  if (platform === "win32") {
+    // PowerShell can open an application chooser for a document-shaped path.
+    // Node's native Windows interpreter is an .exe; reject associations before
+    // starting a shell, then retain the exact-command execution proof below.
+    const interpreter = /^\s*(?:&\s+)?"([^"]+\.exe)"(?:\s|$)/i.exec(command)?.[1];
+    if (!interpreter || !win32.isAbsolute(interpreter))
+      return fail("the Windows interpreter must be an absolute native .exe path");
+  }
   // No PATH (the interpreter must be absolute), no home (no config file), an invalid SDK budget
   // (no network call): the hook has to deny from configuration alone. The shell and node still
   // need the system roots, and PowerShell needs PATHEXT to run any native program at all.
