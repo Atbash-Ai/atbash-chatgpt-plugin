@@ -85,26 +85,40 @@ function snapshot(value: unknown): EnrollmentTransactionExpectation | null {
   return Object.freeze(result) as unknown as EnrollmentTransactionExpectation;
 }
 
-/** Iterative resource/canonical-length guard BEFORE the recursive GTV decoder.
- * Primitive contents are opaque. Limit 24 enclosing constructed nodes and
- * 256 total TLVs; a supported enrollment needs substantially fewer of each.
+/** Iterative grammar/resource guard BEFORE the permissive recursive decoder.
+ * Accept only GTV arrays, octets and strings, with exact wrapper/child tags.
+ * Primitive contents are opaque only in their correct grammar positions.
+ * Limit 24 enclosing constructed nodes and 256 total TLVs.
  */
 export function hasBoundedEnrollmentDer(bytes: Buffer): boolean {
   if (bytes.length < 1 || bytes.length > 65_536) return false;
-  const ends = [bytes.length];
+  type Kind = "value" | "sequence" | "octets" | "string";
+  const frames: { end: number; kind: Kind; single: boolean; count: number }[] = [
+    { end: bytes.length, kind: "value", single: true, count: 0 },
+  ];
   let offset = 0;
   let nodes = 0;
-  let roots = 0;
-  while (ends.length) {
-    const end = ends[ends.length - 1]!;
+  while (frames.length) {
+    const frame = frames[frames.length - 1]!;
+    const end = frame.end;
     if (offset === end) {
-      ends.pop();
+      if (frame.single && frame.count !== 1) return false;
+      frames.pop();
       continue;
     }
     if (offset > end || offset + 2 > end || ++nodes > 256) return false;
-    if (ends.length === 1 && ++roots > 1) return false;
+    if (++frame.count > 1 && frame.single) return false;
     const tag = bytes[offset++]!;
-    if (tag === 0 || (tag & 31) === 31) return false;
+    let child: Kind | undefined;
+    if (frame.kind === "value") {
+      if (tag === 0xa5) child = "sequence";
+      else if (tag === 0xa1) child = "octets";
+      else if (tag === 0xa2) child = "string";
+      else return false;
+    } else if (frame.kind === "sequence") {
+      if (tag !== 0x30) return false;
+      child = "value";
+    } else if (tag !== (frame.kind === "octets" ? 0x04 : 0x0c)) return false;
     let length = bytes[offset++]!;
     if (length & 128) {
       const count = length & 127;
@@ -115,12 +129,12 @@ export function hasBoundedEnrollmentDer(bytes: Buffer): boolean {
     }
     const next = offset + length;
     if (next > end) return false;
-    if (tag & 32) {
-      if (ends.length > 24) return false;
-      ends.push(next);
+    if (child) {
+      if (frames.length > 24) return false;
+      frames.push({ end: next, kind: child, single: frame.kind !== "sequence", count: 0 });
     } else offset = next;
   }
-  return roots === 1 && offset === bytes.length;
+  return offset === bytes.length;
 }
 
 function binary(value: unknown, size: number): value is Uint8Array {

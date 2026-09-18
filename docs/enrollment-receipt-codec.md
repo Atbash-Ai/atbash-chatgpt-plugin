@@ -32,7 +32,11 @@ are refused. None is silently downgraded to an allowed template.
 Input is copied before parsing, bounded to 65,536 bytes, and shared memory is
 refused. An iterative DER preflight limits nesting to 24 constructed nodes and
 total TLVs to 256, rejects indefinite/nonminimal/truncated lengths and trailing
-bytes, and treats primitive payloads as opaque. Strict raw GTX arities precede
+bytes. It validates grammar context: GTV arrays require A5/30 wrappers, octets
+require A1/04, and strings require A2/0C. No other tags are accepted. Primitive
+payloads are opaque only in those positions. This prevents the permissive
+underlying ASN.1 decoder from interpreting a disguised primitive as a container
+and bypassing resource limits. Strict raw GTX arities precede
 projection; canonical re-encoding must reproduce the full input. The separately
 exported DER guard checks structure/resources only, never enrollment validity.
 Failures return the same frozen `{valid:false}` with no raw diagnostics. Success

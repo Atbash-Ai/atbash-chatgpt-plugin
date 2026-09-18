@@ -288,29 +288,32 @@ function tlv(tag: number, contents: Buffer): Buffer {
 }
 
 test("receipt DER guard enforces exact depth and node boundaries before decoding", () => {
-  let nested: Buffer = Buffer.from([5, 0]);
-  for (let i = 0; i < 24; i++) nested = tlv(0x30, nested);
+  let nested: Buffer = wire([]);
+  for (let i = 0; i < 11; i++) nested = tlv(0xa5, tlv(0x30, nested));
   assert.equal(hasBoundedEnrollmentDer(nested), true);
-  assert.equal(hasBoundedEnrollmentDer(tlv(0x30, nested)), false);
+  assert.equal(hasBoundedEnrollmentDer(tlv(0xa5, tlv(0x30, nested))), false);
   assert.equal(
     hasBoundedEnrollmentDer(
-      tlv(0x30, Buffer.concat(Array.from({ length: 255 }, () => Buffer.from([5, 0])))),
+      tlv(
+        0xa5,
+        tlv(0x30, Buffer.concat(Array.from({ length: 127 }, () => wire(PcBuffer.alloc(0))))),
+      ),
     ),
     true,
   );
   assert.equal(
     hasBoundedEnrollmentDer(
-      tlv(0x30, Buffer.concat(Array.from({ length: 256 }, () => Buffer.from([5, 0])))),
+      tlv(
+        0xa5,
+        tlv(0x30, Buffer.concat(Array.from({ length: 128 }, () => wire(PcBuffer.alloc(0))))),
+      ),
     ),
     false,
   );
   // Primitive payload bytes are opaque, even when they resemble nested TLVs.
-  assert.equal(hasBoundedEnrollmentDer(tlv(4, Buffer.alloc(65_532, 0x30))), true);
-  assert.equal(hasBoundedEnrollmentDer(tlv(4, Buffer.alloc(65_533, 0x30))), false);
-  assert.equal(
-    hasBoundedEnrollmentDer(Buffer.concat([Buffer.from([5, 0]), Buffer.from([5, 0])])),
-    false,
-  );
+  assert.equal(hasBoundedEnrollmentDer(tlv(0xa1, tlv(4, Buffer.alloc(65_528, 0x30)))), true);
+  assert.equal(hasBoundedEnrollmentDer(tlv(0xa1, tlv(4, Buffer.alloc(65_529, 0x30)))), false);
+  assert.equal(hasBoundedEnrollmentDer(Buffer.concat([wire([]), wire([])])), false);
 });
 
 test("receipt DER guard rejects class and constructed-bit confusion before decoding", () => {
@@ -331,4 +334,25 @@ test("receipt DER guard rejects class and constructed-bit confusion before decod
   // primitive tag which the permissive underlying decoder reads as sequence.
   const falseSequence = tlv(0xa5, tlv(0x10, wire(nested)));
   assert.equal(hasBoundedEnrollmentDer(falseSequence), false);
+});
+
+test("receipt DER guard checks grammar at nested GTV positions and opaque payload boundaries", () => {
+  const payload = Buffer.concat(Array.from({ length: 300 }, () => wire("nested")));
+  for (const fakeTag of [0x04, 0x05, 0x85, 0x65, 0xe5]) {
+    const nested = tlv(0xa5, tlv(0x30, tlv(fakeTag, payload)));
+    assert.equal(hasBoundedEnrollmentDer(nested), false);
+    refuses(nested);
+  }
+  assert.equal(hasBoundedEnrollmentDer(tlv(0xa1, tlv(0x04, payload))), true);
+  assert.equal(hasBoundedEnrollmentDer(tlv(0xa2, tlv(0x0c, Buffer.from("text")))), true);
+  assert.equal(hasBoundedEnrollmentDer(tlv(0xa1, tlv(0x0c, payload))), false);
+  assert.equal(hasBoundedEnrollmentDer(tlv(0xa2, tlv(0x04, payload))), false);
+  assert.equal(hasBoundedEnrollmentDer(tlv(0xa5, tlv(0x04, payload))), false);
+  assert.equal(hasBoundedEnrollmentDer(tlv(0xa1, Buffer.alloc(0))), false);
+  assert.equal(
+    hasBoundedEnrollmentDer(
+      tlv(0xa1, Buffer.concat([tlv(4, Buffer.alloc(0)), tlv(4, Buffer.alloc(0))])),
+    ),
+    false,
+  );
 });
