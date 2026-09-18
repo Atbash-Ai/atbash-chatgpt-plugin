@@ -1281,11 +1281,19 @@ test("install-hook: status refuses restricted or unsupported registrations as en
     };
     assert.equal(check(original).enforcing, true);
     const hook = original.hooks[0]!;
+    const foreignInterpreter = join(home, "foreign.exe");
+    const directoryInterpreter = join(home, "directory.exe");
+    writeFileSync(foreignInterpreter, "not the trusted Node interpreter");
+    mkdirSync(directoryInterpreter);
     for (const bad of [
+      buildAtbashEntry(REAL_HOOK_SCRIPT, process.platform, foreignInterpreter),
+      buildAtbashEntry(REAL_HOOK_SCRIPT, process.platform, directoryInterpreter),
       { ...original, matcher: "NeverThisTool" },
       { ...original, matcher: undefined },
       { ...original, hooks: [{ ...hook, type: "prompt" }] },
       { ...original, hooks: [{ ...hook, async: true }] },
+      { ...original, hooks: [{ ...hook, async: "false" }] },
+      ...[1, 0, -1, "35", null, undefined].map((timeout) => ({ ...original, hooks: [{ ...hook, timeout }] })),
       { ...original, hooks: [{ ...hook, command: `${hook.command} ; echo extra`, commandWindows: `${hook.commandWindows ?? hook.command} ; echo extra` }] },
       ...(WIN32 ? [{ ...original, hooks: [{ ...hook, command: hook.command.replace(/^& /, ""), commandWindows: hook.commandWindows?.replace(/^& /, "") }] }] : []),
     ]) {
