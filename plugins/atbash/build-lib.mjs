@@ -1,5 +1,5 @@
 import { build } from "esbuild";
-import { readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, copyFile, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
 export const nativePackages = {
@@ -18,8 +18,12 @@ export async function bundleAtbash(outdir, { minify = false, sourcemap = true } 
     bundle: true,
     entryPoints: {
       index: "src/index.ts",
-      "pre-tool-use": "src/pre-tool-use.ts",
+      // The host runs pre-tool-use.cjs, which is the un-bundled shim (src/hook/shim.cjs, copied
+      // below); the bundled hook it loads is pre-tool-use-main.cjs.
+      "pre-tool-use-main": "src/pre-tool-use.ts",
       status: "src/status.ts",
+      // The user-level hooks.json installer: Codex 0.154+ does not load a plugin's own hooks.
+      "install-hook": "src/install-hook.ts",
     },
     format: "cjs",
     legalComments: "none",
@@ -54,10 +58,26 @@ export async function bundleAtbash(outdir, { minify = false, sourcemap = true } 
     target: "node22",
   });
 
-  for (const entry of ["index", "pre-tool-use", "status"]) {
+  for (const entry of ["index", "pre-tool-use-main", "status", "install-hook"]) {
     const outputPath = join(outdir, `${entry}.cjs`);
     const source = await readFile(outputPath, "utf8");
     await writeFile(outputPath, source.replaceAll("\t", "  "), "utf8");
+  }
+
+  // The shim is shipped verbatim, never bundled or minified: it has to load when the bundle cannot.
+  await copyFile("src/hook/shim.cjs", join(outdir, "pre-tool-use.cjs"));
+
+  // File modes are part of what CI diffs against the committed runtime; set them explicitly so a
+  // build reproduces byte-for-byte and mode-for-mode on every platform and umask: the hashbang
+  // bundles are executable (as esbuild marks them), the shim and the library are not.
+  for (const [entry, mode] of [
+    ["index", 0o644],
+    ["pre-tool-use", 0o644],
+    ["pre-tool-use-main", 0o755],
+    ["status", 0o755],
+    ["install-hook", 0o755],
+  ]) {
+    await chmod(join(outdir, `${entry}.cjs`), mode);
   }
 }
 
@@ -76,4 +96,5 @@ module.exports = require(target);
 `;
 
   await writeFile(join(outdir, "atbash-native.cjs"), source, "utf8");
+  await chmod(join(outdir, "atbash-native.cjs"), 0o644);
 }

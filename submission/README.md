@@ -16,7 +16,7 @@ Upload each artifact only to a portal field that accepts that artifact type. Do 
 
 ## Remaining publication requirements
 
-1. Confirm with OpenAI how the public distribution preserves and executes the local hook and runtime. A successful skill scan alone does not establish this. Do not represent a skill-only publication as the complete enforcement product.
+1. Confirm with OpenAI how the public distribution preserves and executes the local hook and runtime. A successful skill scan alone does not establish this. Do not represent a skill-only publication as the complete enforcement product. Verified 2026-09-17 on Codex CLI 0.154.0: plugin-bundled hooks are not loaded at all (`plugin_hooks: removed`), so enforcement on that Codex requires the user-level registration written by `runtime/install-hook.cjs` (see the repository README, "Codex 0.154+: plugin hooks are not loaded"), and the listing must say so.
 2. Use an approved Atbash publisher identity and public support, privacy, and terms pages. The listing records these as pending until verified by the publisher.
 3. Review the listing in `listing.md` and the reproducible scenarios in `test-cases.md`. Provide dedicated demo-agent access only through an approved private reviewer channel if required.
 4. Update the existing portal draft with the final artifacts and source commit. A GitHub push does not update that draft.
