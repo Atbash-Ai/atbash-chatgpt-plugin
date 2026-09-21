@@ -115,11 +115,16 @@ jobs:
           for (const required of [
             ".codex-plugin/plugin.json",
             "runtime/manifest.json",
+            "runtime/install-hook.cjs",
+            "runtime/pre-tool-use.cjs",
+            "runtime/pre-tool-use-main.cjs",
+            "runtime/status.cjs",
             "runtime/native/darwin-arm64/atbash.node",
             "runtime/native/linux-arm64/atbash.node",
             "runtime/native/linux-x64/atbash.node",
             "runtime/native/win32-x64/atbash.node",
             "skills/atbash-setup/SKILL.md",
+            "skills/atbash-setup/scripts/prepare-config.mjs",
           ]) {
             if (!paths.has(required)) throw new Error(`Packed artifact is missing ${required}`);
           }

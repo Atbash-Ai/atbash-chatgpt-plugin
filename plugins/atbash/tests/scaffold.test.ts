@@ -86,10 +86,10 @@ test("hook bundle declares catch-all PreToolUse enforcement", async () => {
   assert.equal(matcher?.matcher, "*");
   assert.equal(handler?.type, "command");
   assert.equal(handler?.command, 'node "$PLUGIN_ROOT/runtime/pre-tool-use.cjs"');
-  assert.equal(handler?.commandWindows, 'node "%PLUGIN_ROOT%\\runtime\\pre-tool-use.cjs"');
+  assert.equal(handler?.commandWindows, 'node "$env:PLUGIN_ROOT\\runtime\\pre-tool-use.cjs"');
   assert.equal(handler?.timeout, 35);
 
-  // The bundled entry runs a bare `node` and a `$PLUGIN_ROOT` / `%PLUGIN_ROOT%` the host must
+  // The bundled entry runs a bare `node` and a `$PLUGIN_ROOT` / `$env:PLUGIN_ROOT` the host must
   // export: on a host that loads plugin hooks it is PATH-dependent, and the documentation must
   // say so rather than present it as a gate on its own.
   const readme = readFileSync(join(process.cwd(), "..", "..", "README.md"), "utf8");
@@ -110,7 +110,7 @@ test("hook bundle declares catch-all PreToolUse enforcement", async () => {
 test("the user-level installer writes the entry hooks.json declares, with the placeholder resolved", async () => {
   // Codex 0.154+ does not load hooks/hooks.json from a plugin; install-hook.cjs writes the same
   // entry into the user's own hooks file. The two must not drift: same matcher, type, timeout and
-  // status message, and the same command with $PLUGIN_ROOT / %PLUGIN_ROOT% replaced by a real path.
+  // status message, and the same command with $PLUGIN_ROOT / $env:PLUGIN_ROOT replaced by a real path.
   const hookManifest = await readJson<HookManifest>(join(process.cwd(), "hooks", "hooks.json"));
   const declared = hookManifest.hooks?.PreToolUse?.[0];
   const declaredHook = declared?.hooks?.[0];
@@ -148,7 +148,10 @@ test("the user-level installer writes the entry hooks.json declares, with the pl
   );
   assert.equal(
     withoutInterpreter(installedHook.commandWindows),
-    withoutInterpreter(declaredHook.commandWindows).replace("%PLUGIN_ROOT%", "C:\\plugins\\atbash"),
+    withoutInterpreter(declaredHook.commandWindows).replace(
+      "$env:PLUGIN_ROOT",
+      "C:\\plugins\\atbash",
+    ),
   );
   assert.deepEqual(Object.keys(installedHook).sort(), Object.keys(declaredHook).sort());
 

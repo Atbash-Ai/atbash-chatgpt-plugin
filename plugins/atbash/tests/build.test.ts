@@ -20,7 +20,7 @@ const buildScriptUrl = new URL("../../build-marketplace.mjs", import.meta.url);
 const buildScriptPath = fileURLToPath(buildScriptUrl);
 const helpers = (await import(buildScriptUrl.href)) as BuildHelpers;
 
-test("build: an npm_execpath that is not npm-cli.js is refused, and it is consulted last", () => {
+test("build: an npm_execpath that is not npm-cli.js is refused, and the invoking npm takes precedence", () => {
   const seen: string[] = [];
   const exists = (p: string) => {
     seen.push(p);
@@ -40,10 +40,10 @@ test("build: an npm_execpath that is not npm-cli.js is refused, and it is consul
   const order: string[] = [];
   const found = helpers.resolveNpmCli({ npm_execpath: legit }, (p) => {
     order.push(p);
-    return p === legit;
+    return true;
   });
   assert.equal(basename(found), "npm-cli.js");
-  assert.equal(order[order.length - 1], legit, "npm_execpath must be the last candidate");
+  assert.deepEqual(order, [legit], "the invoking npm must take precedence over bundled npm");
 });
 
 test("build: a native file path that escapes the extraction directory is refused", () => {
