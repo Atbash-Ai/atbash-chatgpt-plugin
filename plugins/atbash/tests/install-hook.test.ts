@@ -515,7 +515,7 @@ test("install-hook: a hook path containing shell metacharacters or a backslash o
   );
   assert.equal(
     buildAtbashEntry("C:\\x\\runtime\\pre-tool-use.cjs", "win32", WIN32_NODE).hooks[0]?.command,
-    '& "C:/Program Files/nodejs/node.exe" "C:/x/runtime/pre-tool-use.cjs"',
+    '& "C:\\Program Files\\nodejs\\node.exe" "C:\\x\\runtime\\pre-tool-use.cjs"',
   );
 
   // Real plugin directories whose names a shell would interpret: the installer that lives there
