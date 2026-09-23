@@ -6,6 +6,12 @@ Candidate: `atbash` version `0.3.3`, using production `@atbash/sdk@0.7.1`. The p
 
 Run `npm run package:submission` after verification. The resulting `artifacts/submission-manifest.json` records the exact source commit and SHA-256 hashes. A branch URL identifies a moving source; the recorded commit identifies the specific package submitted for review.
 
+CI may build the package for validation, but it does not upload a submission
+artifact from pull-request code or an unprotected release tag. The repository
+currently has no protected release tag or artifact provenance gate. Keep the
+generated files local until a reviewed publication path is configured and
+separately approved.
+
 ## Artifacts
 
 - `atbash-plugin-0.3.3.zip`: complete plugin, including manifest, assets, hook, runtime, native binaries, SDK license, and setup skill.

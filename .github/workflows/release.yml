@@ -96,16 +96,16 @@ jobs:
       - name: Verify committed universal marketplace runtime
         run: npm run build:marketplace && git diff --exit-code -- plugins/atbash/runtime
 
-      - name: Package and checksum the exact plugin artifact
-        id: pack
+      - name: Package and verify the exact plugin artifact
         shell: bash
         run: |
           npm pack --workspace @atbash/codex-plugin --ignore-scripts --json > pack-result.json
           package_file="$(node --input-type=module <<'NODE'
           import { readFileSync } from "node:fs";
-          const root = JSON.parse(readFileSync("package.json", "utf8"));
-          const plugin = JSON.parse(readFileSync("plugins/atbash/package.json", "utf8"));
-          const result = JSON.parse(readFileSync("pack-result.json", "utf8"));
+          const readJson = (path) => JSON.parse(readFileSync(path, "utf8"));
+          const root = readJson("package.json");
+          const plugin = readJson("plugins/atbash/package.json");
+          const result = readJson("pack-result.json");
           if (!Array.isArray(result) || result.length !== 1) throw new Error("Expected exactly one packed artifact");
           const [artifact] = result;
           if (artifact.name !== plugin.name || artifact.version !== root.version || artifact.version !== plugin.version) {
@@ -136,15 +136,3 @@ jobs:
           )"
           test -f "$package_file"
           sha256sum "$package_file" > "$package_file.sha256"
-          echo "package_file=$package_file" >> "$GITHUB_OUTPUT"
-
-      - name: Upload universal plugin package
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
-        with:
-          name: atbash-codex-plugin-${{ github.ref_name }}
-          path: |
-            ${{ steps.pack.outputs.package_file }}
-            ${{ steps.pack.outputs.package_file }}.sha256
-          if-no-files-found: error
-          compression-level: 0
-          retention-days: 90

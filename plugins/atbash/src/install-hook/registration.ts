@@ -5,7 +5,7 @@
  * the path, a plugin moved or deleted) the host cannot spawn the hook and proceeds, so the two
  * paths are checked here, on demand, and a missing one is a warning worth acting on.
  */
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { isAbsolute } from "node:path";
 
 import {
@@ -13,6 +13,7 @@ import {
   HOOK_TIMEOUT_FLOOR_SECONDS,
   HOOK_TIMEOUT_SECONDS,
   HooksFileRefusal,
+  buildAtbashEntry,
   isAtbashHook,
   isAtbashLookalike,
   parseHookCommand,
@@ -175,6 +176,31 @@ export function inspectRegistration(
           spawnable = false;
           report.warnings.push(
             `${label} has timeout ${shape(timeout)}; the host cuts a hook off when its timeout expires and proceeds with the tool call, so anything under ${HOOK_TIMEOUT_FLOOR_SECONDS} s cannot outlast the hook's own deadline and its exit. Re-run install-hook.cjs (it writes ${HOOK_TIMEOUT_SECONDS}).`,
+          );
+        }
+      }
+      if (spawnable) {
+        let supported = false;
+        try {
+          const expected = buildAtbashEntry(parsed.script, identity.platform, parsed.interpreter!)
+            .hooks[0];
+          supported =
+            group.matcher === HOOK_MATCHER &&
+            hook.type === "command" &&
+            (hook.async === undefined || hook.async === false) &&
+            hook.timeout === expected?.timeout &&
+            statSync(parsed.script).isFile() &&
+            statSync(parsed.interpreter!).isFile() &&
+            realpathSync(parsed.interpreter!) === realpathSync(process.execPath) &&
+            (identity.platform !== "win32" || /[.]exe$/i.test(parsed.interpreter!)) &&
+            (spelled === expected?.command || spelled === expected?.commandWindows);
+        } catch {
+          // Unsupported shell syntax cannot establish an applicable registration.
+        }
+        if (!supported) {
+          spawnable = false;
+          report.warnings.push(
+            `${label} is not the supported synchronous installer command; re-run install-hook.cjs.`,
           );
         }
       }

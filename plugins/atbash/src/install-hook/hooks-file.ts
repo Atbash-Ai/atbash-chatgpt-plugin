@@ -19,6 +19,7 @@ import {
   chmodSync,
   existsSync,
   lstatSync,
+  mkdtempSync,
   mkdirSync,
   readFileSync,
   realpathSync,
@@ -29,7 +30,7 @@ import {
 } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
-import { basename, dirname, isAbsolute, join } from "node:path";
+import { basename, dirname, isAbsolute, join, win32 } from "node:path";
 
 export const HOOK_SCRIPT = "pre-tool-use.cjs";
 export const HOOK_MATCHER = "*";
@@ -147,8 +148,8 @@ export function resolveHookScript(runtimeDir: string, platform: NodeJS.Platform)
 
 /** The PreToolUse entry Codex runs: the same shape as the plugin's hooks/hooks.json, with the
  *  `$PLUGIN_ROOT` placeholder replaced by the real absolute path and the bare `node` replaced by
- *  the absolute interpreter. On Windows `command` carries both paths with forward slashes (node
- *  accepts them) and `commandWindows` the backslash form; on POSIX the paths are used as they are. */
+ *  the absolute interpreter. Windows paths retain their native separators: Windows PowerShell
+ *  launched with `-Command` can stall before invoking a forward-slash executable path. */
 export function buildAtbashEntry(
   hookScript: string,
   platform: NodeJS.Platform,
@@ -156,16 +157,14 @@ export function buildAtbashEntry(
 ): AtbashMatcherGroup {
   validateHookScriptPath(hookScript, platform);
   validateHookScriptPath(interpreter, platform, "node interpreter path");
-  const forward = (path: string) => (platform === "win32" ? path.replaceAll("\\", "/") : path);
-  const backward = (path: string) => path.replaceAll("/", "\\");
   // PowerShell needs the call operator to run a quoted program path; sh must not get one.
   const call = platform === "win32" ? "& " : "";
   const hook: AtbashCommandHook = {
     type: "command",
-    command: `${call}"${forward(interpreter)}" "${forward(hookScript)}"`,
+    command: `${call}"${interpreter}" "${hookScript}"`,
     ...(platform === "win32"
       ? {
-          commandWindows: `${call}"${backward(forward(interpreter))}" "${backward(forward(hookScript))}"`,
+          commandWindows: `${call}"${interpreter}" "${hookScript}"`,
         }
       : {}),
     timeout: HOOK_TIMEOUT_SECONDS,
@@ -435,7 +434,7 @@ export function windowsPowerShellPath(env: Readonly<Record<string, string | unde
 /** Run the registered command string exactly as the host would - Windows PowerShell
  *  (`-NoProfile -NonInteractive -Command`) with `commandWindows` and again with `command` on
  *  win32, `/bin/sh -c` with `command` elsewhere - with the synthetic payload on stdin and an
- *  environment that has no PATH, no home and no Atbash configuration. Anything but exit 0 and one
+ *  environment that has no PATH, an isolated empty home and no Atbash configuration. Anything but exit 0 and one
  *  deny decision on stdout is a refusal: a string the shell cannot execute would be a hook that
  *  never answers, and the host proceeds. */
 export function probeRegisteredCommand(
@@ -454,19 +453,48 @@ export function probeRegisteredCommand(
   for (const command of commands) runProbe(command, platform, timeoutMs);
 }
 
+/** Keep only a bounded, fixed-format Windows startup error; hook output is untrusted. */
+export function probeStartupDiagnostic(stderr: Buffer): string {
+  const sample = stderr.subarray(0, 512);
+  const utf16 =
+    (sample.length >= 2 && sample[0] === 0xff && sample[1] === 0xfe) ||
+    (sample.length >= 8 && sample[1] === 0 && sample[3] === 0 && sample[5] === 0);
+  const decoded = sample.toString(utf16 ? "utf16le" : "utf8").replace(/^\uFEFF/, "");
+  const firstLine = decoded.split(/\r?\n/)[0] ?? "";
+  const clr = /^Starting the CLR failed with HRESULT\s+(?:0x)?([0-9a-f]{8})\.?$/i.exec(firstLine);
+  if (clr) return `PowerShell CLR startup failed (HRESULT ${clr[1]})`;
+  const terminated =
+    /^Windows PowerShell terminated with the following error:\s+(?:0x)?([0-9a-f]{8})\.?$/i.exec(
+      firstLine,
+    );
+  if (terminated) return `PowerShell startup failed (${terminated[1]})`;
+  return "";
+}
+
 function runProbe(command: string, platform: NodeJS.Platform, timeoutMs: number): void {
   const fail = (reason: string): never => {
     throw new HooksFileRefusal(
-      `the registered command could not be executed by the host shell: ${reason} (command: ${command})`,
+      `the registered command could not be executed by the host shell: ${reason}`,
     );
   };
-  // No PATH (the interpreter must be absolute), no home (no config file), an invalid SDK budget
-  // (no network call): the hook has to deny from configuration alone. The shell and node still
-  // need the system roots, and PowerShell needs PATHEXT to run any native program at all.
+  if (platform === "win32") {
+    // PowerShell can open an application chooser for a document-shaped path.
+    // Node's native Windows interpreter is an .exe; reject associations before
+    // starting a shell, then retain the exact-command execution proof below.
+    const interpreter = /^\s*(?:&\s+)?"([^"]+\.exe)"(?:\s|$)/i.exec(command)?.[1];
+    if (!interpreter || !win32.isAbsolute(interpreter))
+      return fail("the Windows interpreter must be an absolute native .exe path");
+  }
+  // No PATH (the interpreter must be absolute), an isolated empty home (no user config), an
+  // invalid SDK budget (no network call): the hook has to deny from configuration alone.
+  // PowerShell needs a real profile directory on some Windows hosts to start its CLR.
+  const sandbox = mkdtempSync(join(tmpdir(), "atbash-hook-probe-"));
   const env: Record<string, string> = {
     PATH: "",
-    HOME: "",
-    USERPROFILE: "",
+    HOME: sandbox,
+    USERPROFILE: sandbox,
+    APPDATA: sandbox,
+    LOCALAPPDATA: sandbox,
     ATBASH_CODEX_TIMEOUT_MS: "invalid",
     ATBASH_HOOK_DEADLINE_MS: "",
   };
@@ -481,27 +509,37 @@ function runProbe(command: string, platform: NodeJS.Platform, timeoutMs: number)
       : ["/bin/sh", ["-c", command]];
   // A neutral working directory: with the home variables emptied a relative config lookup would
   // otherwise resolve against whatever directory the installer was started from.
-  const result = spawnSync(shell, args, {
-    input: JSON.stringify(PROBE_PAYLOAD),
-    encoding: "utf8",
-    env,
-    cwd: tmpdir(),
-    timeout: timeoutMs,
-    windowsHide: true,
-  });
+  const result = (() => {
+    try {
+      return spawnSync(shell, args, {
+        input: JSON.stringify(PROBE_PAYLOAD),
+        env,
+        cwd: sandbox,
+        timeout: timeoutMs,
+        windowsHide: true,
+      });
+    } finally {
+      rmSync(sandbox, { force: true, recursive: true });
+    }
+  })();
   if (result.error !== undefined) {
     const code = (result.error as NodeJS.ErrnoException).code;
-    return fail(code === "ETIMEDOUT" ? `no decision within ${timeoutMs} ms` : result.error.message);
+    return fail(
+      code === "ETIMEDOUT"
+        ? `no decision within ${timeoutMs} ms`
+        : `spawn failed (${code ?? "unknown"})`,
+    );
   }
   if (result.status !== 0) {
-    const detail = (result.stderr ?? "").trim().split(/\r?\n/)[0]?.slice(0, 200) ?? "";
+    const detail =
+      platform === "win32" ? probeStartupDiagnostic(result.stderr ?? Buffer.alloc(0)) : "";
     return fail(
       `exit ${result.status ?? `signal ${result.signal ?? "unknown"}`}${detail === "" ? "" : ` (${detail})`}`,
     );
   }
   let decision: unknown;
   try {
-    decision = JSON.parse((result.stdout ?? "").trim());
+    decision = JSON.parse((result.stdout ?? Buffer.alloc(0)).toString("utf8").trim());
   } catch {
     return fail("stdout is not one JSON object");
   }
@@ -512,7 +550,7 @@ function runProbe(command: string, platform: NodeJS.Platform, timeoutMs: number)
     : undefined;
   if (permission !== "deny") {
     return fail(
-      `stdout is not a deny decision (permissionDecision: ${JSON.stringify(permission)})`,
+      `stdout is not a deny decision (permissionDecision: ${permission === "allow" ? '"allow"' : "invalid"})`,
     );
   }
 }

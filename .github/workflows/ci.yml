@@ -9,8 +9,14 @@ permissions:
 
 jobs:
   verify:
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    # The serial Windows ACL/bootstrap suite launches real PowerShell helpers.
+    # Keep the full suite within CI's job budget instead of cancelling it.
+    timeout-minutes: 45
 
     steps:
       - name: Check out repository
@@ -30,6 +36,10 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Verify Windows ACL helper startup
+        if: runner.os == 'Windows'
+        run: npm run build --workspace @atbash/codex-plugin && npx tsc -p plugins/atbash/tsconfig.test.json && node --test plugins/atbash/dist-tests/tests/windows-module-path.test.js
+
       - name: Verify
         run: npm run verify
 
@@ -37,10 +47,5 @@ jobs:
         run: npm run build:marketplace && git diff --exit-code -- plugins/atbash/runtime
 
       - name: Package submission candidate
+        if: runner.os == 'Linux'
         run: npm run package:submission
-
-      - name: Upload submission candidate
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
-        with:
-          name: atbash-submission
-          path: artifacts/

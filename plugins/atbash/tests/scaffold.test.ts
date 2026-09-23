@@ -144,7 +144,10 @@ test("the user-level installer writes the entry hooks.json declares, with the pl
     String(command).replace(/^(?:&\s+)?(?:node|"[^"]+")\s+/, "");
   assert.equal(
     withoutInterpreter(installedHook.command),
-    withoutInterpreter(declaredHook.command).replace("$PLUGIN_ROOT", "C:/plugins/atbash"),
+    withoutInterpreter(declaredHook.command).replace(
+      "$PLUGIN_ROOT/runtime/pre-tool-use.cjs",
+      "C:\\plugins\\atbash\\runtime\\pre-tool-use.cjs",
+    ),
   );
   assert.equal(
     withoutInterpreter(installedHook.commandWindows),
@@ -160,9 +163,6 @@ test("the user-level installer writes the entry hooks.json declares, with the pl
   assert.ok(interpreter, "the installer names an interpreter");
   assert.equal(isAbsolute(interpreter), true);
   assert.equal(existsSync(interpreter), true);
-  assert.equal(interpreter, process.execPath.replaceAll("\\", "/"));
-  assert.equal(
-    parseHookCommand(installedHook.commandWindows)?.interpreter,
-    process.execPath.replaceAll("/", "\\"),
-  );
+  assert.equal(interpreter, process.execPath);
+  assert.equal(parseHookCommand(installedHook.commandWindows)?.interpreter, process.execPath);
 });

@@ -37,4 +37,19 @@ export default tseslint.config(
       "@typescript-eslint/no-require-imports": "off",
     },
   },
+  {
+    // Node --require installs this test boundary before the packaged CommonJS CLI loads.
+    files: ["plugins/atbash/tests/pairing-cli-preload.cjs"],
+    languageOptions: {
+      sourceType: "commonjs",
+      globals: {
+        Buffer: "readonly",
+        process: "readonly",
+        require: "readonly",
+        URL: "readonly",
+        Response: "readonly",
+      },
+    },
+    rules: { "@typescript-eslint/no-require-imports": "off" },
+  },
 );

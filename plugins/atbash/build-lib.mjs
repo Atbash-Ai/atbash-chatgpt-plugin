@@ -24,6 +24,7 @@ export async function bundleAtbash(outdir, { minify = false, sourcemap = true } 
       status: "src/status.ts",
       // The user-level hooks.json installer: Codex 0.154+ does not load a plugin's own hooks.
       "install-hook": "src/install-hook.ts",
+      pair: "src/pair.ts",
     },
     format: "cjs",
     legalComments: "none",
@@ -58,7 +59,7 @@ export async function bundleAtbash(outdir, { minify = false, sourcemap = true } 
     target: "node22",
   });
 
-  for (const entry of ["index", "pre-tool-use-main", "status", "install-hook"]) {
+  for (const entry of ["index", "pre-tool-use-main", "status", "install-hook", "pair"]) {
     const outputPath = join(outdir, `${entry}.cjs`);
     const source = await readFile(outputPath, "utf8");
     await writeFile(outputPath, source.replaceAll("\t", "  "), "utf8");
@@ -76,6 +77,7 @@ export async function bundleAtbash(outdir, { minify = false, sourcemap = true } 
     ["pre-tool-use-main", 0o755],
     ["status", 0o755],
     ["install-hook", 0o755],
+    ["pair", 0o755],
   ]) {
     await chmod(join(outdir, `${entry}.cjs`), mode);
   }
