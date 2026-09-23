@@ -38,10 +38,3 @@ jobs:
       - name: Package submission candidate
         if: runner.os == 'Linux'
         run: npm run package:submission
-
-      - name: Upload submission candidate
-        if: runner.os == 'Linux'
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
-        with:
-          name: atbash-submission
-          path: artifacts/

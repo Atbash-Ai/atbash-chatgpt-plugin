@@ -75,11 +75,13 @@ read-only live query verified transport and the configured identity's absence.
 Final full environment runs, browser tests, negative proofs, independent reviews
 and a generated pipeline handoff remain necessary.
 
-`postchain-client@2.1.2` adds a transitive Elliptic signing advisory reported as
-six low-severity dependency entries. This adapter uses its GTV codec only;
-intent signing uses `node:crypto`. The security reviewer found no vulnerable
-Elliptic signing path in these modules. Reassess if Postchain signing/ECDH is
-introduced; the dependency audit is not clean.
+`postchain-client@2.1.2` brings six low-severity production dependency
+advisories with no fix reported by npm audit. Pairing-intent signing uses
+`node:crypto`, but enrollment-receipt verification calls Postchain's
+`gtx.checkGTXSignatures`, which reaches the transitive Elliptic verifier on
+untrusted receipt signatures. Exploitability remains unproven; the advisory
+cannot be dismissed as unreachable. Keep production enrollment blocked until
+the dependency or a protocol-equivalent verifier is reviewed and tested.
 
 On Windows, installer probes reject document-shaped interpreters before starting
 a shell. Node must use an absolute native .exe path. The invalid-interpreter
