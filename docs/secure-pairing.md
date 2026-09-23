@@ -77,9 +77,9 @@ browser security. It is different from a Windows file-association dialog.
 
 ## Verification
 
-Run `npm test` from the repository. The test runner limits file concurrency to
-two so simultaneous Windows PowerShell ACL probes do not starve their bounded
-helper deadlines. Pairing component tests use real loopback
+Run `npm test` from the repository. The test runner runs files sequentially so
+Windows PowerShell ACL probes do not compete for startup resources across test
+files. Pairing component tests use real loopback
 HTTP and Node cryptographic signatures. Chain readback tests exercise real GTV
 encoding/decoding with controlled query results. The seven former session
 composition tests were retired when that entry point was disabled; they are
