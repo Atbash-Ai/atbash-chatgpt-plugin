@@ -6,6 +6,7 @@ import { join } from "node:path";
 import test from "node:test";
 import {
   preparePrivateWindowsDirectory,
+  preparePrivateWindowsFile,
   verifyPrivateWindowsStorage,
 } from "../src/atbash/windows-storage-security.js";
 import { createFixture } from "./windows-acl-fixture.js";
@@ -16,7 +17,9 @@ if (process.platform === "win32") {
     const directory = join(fixture, "private");
     preparePrivateWindowsDirectory(directory);
     const file = join(directory, "marker");
-    await writeFile(file, "public fixture");
+    await writeFile(file, "", { flag: "wx" });
+    preparePrivateWindowsFile(file);
+    await writeFile(file, "public fixture", { flag: "r+" });
     const originalSpawn = childProcess.spawnSync;
     let captured: string[] = [];
     const stub = t.mock.method(childProcess, "spawnSync", (_executable: string, args: string[]) => {

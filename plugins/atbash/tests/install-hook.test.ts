@@ -149,10 +149,7 @@ function assertAtbashHook(hook: HookShape | undefined): void {
   assert.equal(hook.timeout, HOOK_TIMEOUT_SECONDS);
   assert.equal(hook.statusMessage, HOOK_STATUS_MESSAGE);
   if (WIN32) {
-    assert.equal(
-      hook.commandWindows,
-      `& "${NODE_COMMAND.replaceAll("/", "\\")}" "${COMMAND_PATH.replaceAll("/", "\\")}"`,
-    );
+    assert.equal(hook.commandWindows, OWN_COMMAND);
   } else {
     assert.equal(hook.commandWindows, undefined, "commandWindows is a Windows-only key");
   }
@@ -189,7 +186,8 @@ test("install-hook: the entry names the plugin's real absolute hook path, forwar
     ],
   });
 
-  // Windows: forward slashes in `command`, the backslash spelling in `commandWindows`.
+  // Windows: both host fields use the forward-slash spelling proven by the
+  // elevated runner's real PowerShell probe.
   const windows = buildAtbashEntry(
     "C:\\Users\\dev\\New folder (3)\\runtime\\pre-tool-use.cjs",
     "win32",
@@ -200,7 +198,7 @@ test("install-hook: the entry names the plugin's real absolute hook path, forwar
     command:
       '& "C:/Program Files/nodejs/node.exe" "C:/Users/dev/New folder (3)/runtime/pre-tool-use.cjs"',
     commandWindows:
-      '& "C:\\Program Files\\nodejs\\node.exe" "C:\\Users\\dev\\New folder (3)\\runtime\\pre-tool-use.cjs"',
+      '& "C:/Program Files/nodejs/node.exe" "C:/Users/dev/New folder (3)/runtime/pre-tool-use.cjs"',
     timeout: HOOK_TIMEOUT_SECONDS,
     statusMessage: HOOK_STATUS_MESSAGE,
   });
@@ -277,7 +275,7 @@ test("install-hook: the entry names the plugin's real absolute hook path, forwar
   assert.equal(commandScriptPath('"/usr/bin/node" /a/c.cjs'), undefined);
 });
 
-test("install-hook: the real hook starts with the probe's restricted environment", () => {
+test("install-hook: both registered host fields answer with the probe's restricted environment", () => {
   const base: Record<string, string> = {
     PATH: "",
     HOME: "",
@@ -290,15 +288,6 @@ test("install-hook: the real hook starts with the probe's restricted environment
     if (value !== undefined) base[name] = value;
   }
   if (WIN32) base.PATHEXT = process.env.PATHEXT ?? ".COM;.EXE;.BAT;.CMD";
-  const additions = WIN32
-    ? [
-        [],
-        ["APPDATA"],
-        ["LOCALAPPDATA"],
-        ["PSModulePath"],
-        ["APPDATA", "LOCALAPPDATA", "PSModulePath"],
-      ]
-    : [[]];
   const commands: readonly (readonly [string, string])[] = WIN32
     ? [
         ["forward", OWN_COMMAND],
@@ -308,40 +297,55 @@ test("install-hook: the real hook starts with the probe's restricted environment
         ],
       ]
     : [["forward", OWN_COMMAND]];
-  const results = additions.flatMap((names) => {
-    const env = { ...base };
-    for (const name of names) {
-      const value = process.env[name];
-      if (value !== undefined) env[name] = value;
-    }
-    return commands.map(([variant, command]) => {
-      const result = spawnSync(
-        WIN32 ? windowsPowerShellPath(process.env) : "/bin/sh",
-        WIN32 ? ["-NoProfile", "-NonInteractive", "-Command", command] : ["-c", command],
-        {
-          cwd: tmpdir(),
-          env,
-          input: JSON.stringify(PROBE_PAYLOAD),
-          encoding: "utf8",
-          timeout: 5_000,
-          windowsHide: true,
-        },
-      );
-      const errorCode = (result.error as NodeJS.ErrnoException | undefined)?.code;
-      return {
-        variant,
-        additions: names,
-        status: result.status,
-        errorCode: errorCode && /^[A-Z0-9_]{1,40}$/.test(errorCode) ? errorCode : null,
-        stdoutBytes: Buffer.byteLength(result.stdout ?? ""),
-        stderrBytes: Buffer.byteLength(result.stderr ?? ""),
-        answered: (result.stdout ?? "").trimStart().startsWith("{"),
-      };
-    });
+  const results = commands.map(([variant, command]) => {
+    const result = spawnSync(
+      WIN32 ? windowsPowerShellPath(process.env) : "/bin/sh",
+      WIN32 ? ["-NoProfile", "-NonInteractive", "-Command", command] : ["-c", command],
+      {
+        cwd: tmpdir(),
+        env: base,
+        input: JSON.stringify(PROBE_PAYLOAD),
+        encoding: "utf8",
+        timeout: 5_000,
+        windowsHide: true,
+      },
+    );
+    const errorCode = (result.error as NodeJS.ErrnoException | undefined)?.code;
+    return {
+      variant,
+      status: result.status,
+      errorCode: errorCode && /^[A-Z0-9_]{1,40}$/.test(errorCode) ? errorCode : null,
+      stdout: result.stdout ?? "",
+    };
   });
-  assert.equal(results[0]?.status, 0, JSON.stringify(results));
-  assert.equal(results[0]?.answered, true, JSON.stringify(results));
-  if (WIN32) assert.equal(results[1]?.status, 0, JSON.stringify(results));
+  for (const result of results) {
+    assert.equal(result.status, 0, `${result.variant}: host shell did not run the hook`);
+    assert.equal(result.errorCode, null, `${result.variant}: process launch failed`);
+    // Missing synthetic credentials may produce a diagnostic; the host must
+    // still receive the deny decision on stdout.
+    const answer = JSON.parse(result.stdout) as {
+      hookSpecificOutput?: {
+        hookEventName?: string;
+        permissionDecision?: string;
+        permissionDecisionReason?: string;
+      };
+    };
+    assert.equal(
+      answer.hookSpecificOutput?.hookEventName,
+      "PreToolUse",
+      `${result.variant}: wrong event`,
+    );
+    assert.equal(
+      answer.hookSpecificOutput?.permissionDecision,
+      "deny",
+      `${result.variant}: no deny`,
+    );
+    assert.equal(
+      answer.hookSpecificOutput?.permissionDecisionReason,
+      "Atbash ERROR: configuration is missing or invalid.",
+      `${result.variant}: hook did not reach the configuration check`,
+    );
+  }
 });
 
 test("install-hook: a hook path containing shell metacharacters or a backslash on POSIX is refused, nothing written", () => {

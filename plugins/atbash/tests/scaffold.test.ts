@@ -148,7 +148,9 @@ test("the user-level installer writes the entry hooks.json declares, with the pl
   );
   assert.equal(
     withoutInterpreter(installedHook.commandWindows),
-    withoutInterpreter(declaredHook.commandWindows).replace("%PLUGIN_ROOT%", "C:\\plugins\\atbash"),
+    withoutInterpreter(declaredHook.commandWindows)
+      .replace("%PLUGIN_ROOT%", "C:\\plugins\\atbash")
+      .replaceAll("\\", "/"),
   );
   assert.deepEqual(Object.keys(installedHook).sort(), Object.keys(declaredHook).sort());
 
@@ -160,6 +162,6 @@ test("the user-level installer writes the entry hooks.json declares, with the pl
   assert.equal(interpreter, process.execPath.replaceAll("\\", "/"));
   assert.equal(
     parseHookCommand(installedHook.commandWindows)?.interpreter,
-    process.execPath.replaceAll("/", "\\"),
+    process.execPath.replaceAll("\\", "/"),
   );
 });

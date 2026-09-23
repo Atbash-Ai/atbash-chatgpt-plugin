@@ -141,7 +141,9 @@ export function resolveHookScript(runtimeDir: string, platform: NodeJS.Platform)
 /** The PreToolUse entry Codex runs: the same shape as the plugin's hooks/hooks.json, with the
  *  `$PLUGIN_ROOT` placeholder replaced by the real absolute path and the bare `node` replaced by
  *  the absolute interpreter. On Windows `command` carries both paths with forward slashes (node
- *  accepts them) and `commandWindows` the backslash form; on POSIX the paths are used as they are. */
+ *  accepts them) in both fields. The forward-slash spelling also survives the
+ *  restricted PowerShell host probe on elevated Windows runners; the backslash
+ *  spelling terminated PowerShell before the hook could answer. */
 export function buildAtbashEntry(
   hookScript: string,
   platform: NodeJS.Platform,
@@ -150,7 +152,6 @@ export function buildAtbashEntry(
   validateHookScriptPath(hookScript, platform);
   validateHookScriptPath(interpreter, platform, "node interpreter path");
   const forward = (path: string) => (platform === "win32" ? path.replaceAll("\\", "/") : path);
-  const backward = (path: string) => path.replaceAll("/", "\\");
   // PowerShell needs the call operator to run a quoted program path; sh must not get one.
   const call = platform === "win32" ? "& " : "";
   const hook: AtbashCommandHook = {
@@ -158,7 +159,7 @@ export function buildAtbashEntry(
     command: `${call}"${forward(interpreter)}" "${forward(hookScript)}"`,
     ...(platform === "win32"
       ? {
-          commandWindows: `${call}"${backward(forward(interpreter))}" "${backward(forward(hookScript))}"`,
+          commandWindows: `${call}"${forward(interpreter)}" "${forward(hookScript)}"`,
         }
       : {}),
     timeout: HOOK_TIMEOUT_SECONDS,

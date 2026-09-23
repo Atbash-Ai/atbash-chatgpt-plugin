@@ -11,20 +11,49 @@ import {
 } from "./windows-acl-fixture.js";
 import {
   preparePrivateWindowsDirectory,
+  preparePrivateWindowsFile,
   verifyPrivateWindowsDirectory,
   verifyPrivateWindowsFile,
   verifyPrivateWindowsStorage,
 } from "../src/atbash/windows-storage-security.js";
 
 const TRUSTED_INSTALLER = "S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464";
+async function writePrivateFixture(path: string, contents: string): Promise<void> {
+  await writeFile(path, "", { flag: "wx" });
+  preparePrivateWindowsFile(path);
+  await writeFile(path, contents, { flag: "r+" });
+}
 if (process.platform === "win32") {
+  test("Windows bootstrap ACL: only an empty private file can be adopted before secret writes", async () => {
+    const fixture = await createFixture();
+    const directory = join(fixture, "private");
+    preparePrivateWindowsDirectory(directory);
+    const empty = join(directory, "empty");
+    await writeFile(empty, "", { flag: "wx" });
+    preparePrivateWindowsFile(empty);
+    verifyPrivateWindowsFile(empty);
+    assert.equal((await stat(empty)).size, 0);
+    const nonempty = join(directory, "nonempty");
+    await writeFile(nonempty, "public fixture", { flag: "wx" });
+    const before = readFixtureDescriptor(nonempty);
+    assert.throws(() => preparePrivateWindowsFile(nonempty), /cannot be verified/);
+    assert.equal(readFixtureDescriptor(nonempty), before);
+    assert.equal(await readFile(nonempty, "utf8"), "public fixture");
+    const granted = join(directory, "granted");
+    await writeFile(granted, "", { flag: "wx" });
+    addFixtureGrant(granted, "S-1-1-0");
+    const untrusted = readFixtureDescriptor(granted);
+    assert.throws(() => preparePrivateWindowsFile(granted), /cannot be verified/);
+    assert.equal(readFixtureDescriptor(granted), untrusted);
+  });
+
   test("Windows bootstrap ACL: Unicode path transport preserves the exact directory", async () => {
     const fixture = await createFixture();
     const directory = join(fixture, `private-${String.fromCharCode(0x5d0)}`);
     preparePrivateWindowsDirectory(directory);
     assert.equal((await stat(directory)).isDirectory(), true);
     const file = join(directory, "marker");
-    await writeFile(file, "public fixture");
+    await writePrivateFixture(file, "public fixture");
     verifyPrivateWindowsStorage(directory, [file]);
     assert.equal(await readFile(file, "utf8"), "public fixture");
   });
@@ -35,7 +64,7 @@ if (process.platform === "win32") {
     preparePrivateWindowsDirectory(directory);
     preparePrivateWindowsDirectory(sibling);
     const file = join(sibling, "marker");
-    await writeFile(file, "public fixture");
+    await writePrivateFixture(file, "public fixture");
     verifyPrivateWindowsStorage(sibling, [file]);
     const before = readFixtureDescriptor(sibling);
     assert.throws(() => verifyPrivateWindowsStorage(directory, [file]), /cannot be verified/);
@@ -47,13 +76,13 @@ if (process.platform === "win32") {
     const directory = join(fixture, "private");
     preparePrivateWindowsDirectory(directory);
     const files = ["claim", "stage", "published"].map((name) => join(directory, name));
-    await writeFile(files[0]!, "public claim");
-    await writeFile(files[1]!, "public stage");
+    await writePrivateFixture(files[0]!, "public claim");
+    await writePrivateFixture(files[1]!, "public stage");
     await link(files[1]!, files[2]!);
     verifyPrivateWindowsStorage(directory, files);
     assert.equal((await stat(files[2]!)).nlink, 2);
     const last = join(directory, "independent-last-member");
-    await writeFile(last, "public fixture");
+    await writePrivateFixture(last, "public fixture");
     const members = [files[0]!, files[1]!, last];
     verifyPrivateWindowsStorage(directory, members);
     const handle = await open(last, "r");
@@ -72,7 +101,7 @@ if (process.platform === "win32") {
     const directory = join(fixture, "private");
     preparePrivateWindowsDirectory(directory);
     const file = join(directory, "marker");
-    await writeFile(file, "public fixture");
+    await writePrivateFixture(file, "public fixture");
     verifyPrivateWindowsStorage(directory, [file]);
     const malformed: unknown[] = [
       undefined,
@@ -108,7 +137,7 @@ if (process.platform === "win32") {
     const directory = join(parent, "private");
     preparePrivateWindowsDirectory(directory);
     const file = join(directory, "marker");
-    await writeFile(file, "public fixture");
+    await writePrivateFixture(file, "public fixture");
     verifyPrivateWindowsStorage(directory, [file]);
     addFixtureGrant(parent, "S-1-1-0");
     const before = readFixtureDescriptor(parent);
@@ -118,7 +147,7 @@ if (process.platform === "win32") {
     const other = join(fixture, "other");
     preparePrivateWindowsDirectory(other);
     const otherFile = join(other, "marker");
-    await writeFile(otherFile, "public fixture");
+    await writePrivateFixture(otherFile, "public fixture");
     verifyPrivateWindowsStorage(other, [otherFile]);
     addFixtureGrant(other, "S-1-1-0");
     const changed = readFixtureDescriptor(other);
@@ -180,7 +209,7 @@ if (process.platform === "win32") {
       const directory = join(fixture, "private");
       preparePrivateWindowsDirectory(directory);
       const file = join(directory, "marker");
-      await writeFile(file, "public fixture");
+      await writePrivateFixture(file, "public fixture");
       const before = setFixtureDescriptor(file, descriptor);
       const bytes = Buffer.from(before, "base64");
       const dacl = bytes.readUInt32LE(16);
@@ -250,6 +279,7 @@ if (process.platform === "win32") {
     const path = join(directory, "empty-staging");
     const handle = await open(path, "wx", 0o600);
     try {
+      preparePrivateWindowsFile(path);
       verifyPrivateWindowsFile(path);
       assert.equal((await handle.stat()).size, 0);
     } finally {
@@ -289,6 +319,7 @@ if (process.platform === "win32") {
     const file = join(child, "empty");
     const handle = await open(file, "wx");
     await handle.close();
+    preparePrivateWindowsFile(file);
     verifyPrivateWindowsFile(file);
     addFixtureGrant(file, TRUSTED_INSTALLER);
     assert.throws(() => verifyPrivateWindowsFile(file), /cannot be verified/);

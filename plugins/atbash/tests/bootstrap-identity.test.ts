@@ -1114,10 +1114,9 @@ if (process.platform === "win32") {
     assert.equal(String(original.dev), result.replacementOriginal?.dev);
     assert.notEqual(original.ino, replacement.ino);
     assert.deepEqual(await readdir(directory + ".preserved"), []);
-    assert.deepEqual((await readdir(directory)).sort(), [
-      ".onboarding-bootstrap-claim",
-      ".onboarding-bootstrap-staging",
-    ]);
+    // The private-file preparation now detects the replacement immediately
+    // after the empty claim, before staging or generating any secret.
+    assert.deepEqual(await readdir(directory), [".onboarding-bootstrap-claim"]);
     const before = await snapshotFixture(home);
     refused(await run(home));
     assert.deepEqual(await snapshotFixture(home), before);

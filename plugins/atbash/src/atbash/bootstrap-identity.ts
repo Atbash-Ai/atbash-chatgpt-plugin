@@ -3,6 +3,7 @@ import type { BigIntStats } from "node:fs";
 import { link, lstat, open, realpath, type FileHandle } from "node:fs/promises";
 import { homedir } from "node:os";
 import { isAbsolute, join, resolve } from "node:path";
+import { preparePrivateWindowsFile } from "./windows-storage-security.js";
 import { WindowsStorageSession } from "./windows-storage-session.js";
 
 export interface CreatedLocalIdentity {
@@ -111,11 +112,13 @@ export async function bootstrapWindowsIdentity(): Promise<CreatedLocalIdentity> 
     claim = await open(claimPath, "wx", 0o600);
     const claimIdentity = identity(await claim.stat({ bigint: true }), false, 1n);
     if (claimIdentity.size !== 0n) refuse();
+    preparePrivateWindowsFile(claimPath);
     await permissions.verifyFile(claimPath);
     sameObject(identity(await lstat(claimPath, { bigint: true }), false, 1n), claimIdentity);
     staging = await open(stagingPath, "wx+", 0o600);
     const stagingIdentity = identity(await staging.stat({ bigint: true }), false, 1n);
     if (stagingIdentity.size !== 0n) refuse();
+    preparePrivateWindowsFile(stagingPath);
 
     async function verifyBoundary(links: bigint, published: boolean): Promise<void> {
       inputsUnchanged();

@@ -6,7 +6,7 @@ import { isAbsolute, join } from "node:path";
 export const WINDOWS_STORAGE_CHECKS = String.raw`
   $ordinal = [StringComparison]::Ordinal
   if ($request.operation -isnot [string] -or
-      @(@('prepare-directory','verify-directory','verify-file','verify-storage') | Where-Object {
+      @(@('prepare-directory','prepare-file','verify-directory','verify-file','verify-storage') | Where-Object {
         [string]::Equals($_, $request.operation, $ordinal)
       }).Count -ne 1) { throw 'operation' }
   if ([string]::Equals($request.operation, 'verify-storage', $ordinal)) {
@@ -112,6 +112,30 @@ export const WINDOWS_STORAGE_CHECKS = String.raw`
       }
       CheckPrivate $path $true
     }
+    'prepare-file' {
+      # An elevated Windows token can give a newly-created file to Administrators
+      # even inside our private directory. Adopt only an empty file in a verified
+      # private parent, before a credential is generated or written.
+      $parent = [IO.Path]::GetDirectoryName($path)
+      CheckPrivate $parent $true
+      if (-not [IO.File]::Exists($path)) { throw 'exists' }
+      $attributes = [IO.File]::GetAttributes($path)
+      if (($attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0 -or
+          ($attributes -band [IO.FileAttributes]::Directory) -ne 0) { throw 'kind' }
+      if ([IO.FileInfo]::new($path).Length -ne 0) { throw 'exists' }
+      $acl = [IO.File]::GetAccessControl($path)
+      $owner = $acl.GetOwner([Security.Principal.SecurityIdentifier]).Value
+      if ($owner -notin @($sid.Value, 'S-1-5-32-544')) { throw 'owner' }
+      $full = $false
+      foreach ($ace in @(ReadRawRules $acl)) {
+        if ($ace.Sid -ne $sid.Value -or -not $ace.Allow -or ($ace.Flags -band 8) -ne 0) { throw 'principal' }
+        if (($ace.Rights -band 2032127) -eq 2032127) { $full = $true }
+      }
+      if (-not $full) { throw 'rights' }
+      $acl.SetOwner($sid)
+      [IO.File]::SetAccessControl($path, $acl)
+      CheckPrivate $path $false
+    }
     'verify-file' { CheckPrivate $path $false }
     'verify-directory' { CheckPrivate $path $true }
     'verify-storage' {
@@ -145,7 +169,8 @@ ${WINDOWS_STORAGE_CHECKS}
 `;
 
 function check(
-  operation: "prepare-directory" | "verify-directory" | "verify-file" | "verify-storage",
+  operation:
+    "prepare-directory" | "prepare-file" | "verify-directory" | "verify-file" | "verify-storage",
   path: string,
   files?: readonly string[],
 ): void {
@@ -178,6 +203,10 @@ function check(
 
 export function preparePrivateWindowsDirectory(path: string): void {
   check("prepare-directory", path);
+}
+
+export function preparePrivateWindowsFile(path: string): void {
+  check("prepare-file", path);
 }
 
 export function verifyPrivateWindowsFile(path: string): void {

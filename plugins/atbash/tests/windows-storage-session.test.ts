@@ -8,7 +8,10 @@ import { performance } from "node:perf_hooks";
 import { PassThrough } from "node:stream";
 import test, { type TestContext } from "node:test";
 import { WindowsStorageSession } from "../src/atbash/windows-storage-session.js";
-import { preparePrivateWindowsDirectory } from "../src/atbash/windows-storage-security.js";
+import {
+  preparePrivateWindowsDirectory,
+  preparePrivateWindowsFile,
+} from "../src/atbash/windows-storage-security.js";
 import { addFixtureGrant, createFixture, readFixtureDescriptor } from "./windows-acl-fixture.js";
 
 function observe(t: TestContext) {
@@ -33,6 +36,12 @@ function observe(t: TestContext) {
   return { children, launch: () => launch };
 }
 
+async function writePrivateFixture(path: string): Promise<void> {
+  await writeFile(path, "", { flag: "wx" });
+  preparePrivateWindowsFile(path);
+  await writeFile(path, "public fixture", { flag: "r+" });
+}
+
 if (process.platform === "win32") {
   test("persistent ACL helper performs fresh real checks and exits after refusal", async (t) => {
     const observation = observe(t);
@@ -42,7 +51,7 @@ if (process.platform === "win32") {
     try {
       await session.prepareDirectory(directory);
       const file = join(directory, "marker");
-      await writeFile(file, "public fixture");
+      await writePrivateFixture(file);
       await session.verifyStorage(directory, [file]);
       addFixtureGrant(file, "S-1-1-0");
       const before = readFixtureDescriptor(file);
@@ -66,7 +75,7 @@ if (process.platform === "win32") {
     try {
       await session.prepareDirectory(directory);
       const file = join(directory, "marker");
-      await writeFile(file, "public fixture");
+      await writePrivateFixture(file);
       for (let index = 0; index < 7; index++) await session.verifyFile(file);
       await assert.rejects(session.verifyFile(file), /cannot be verified/);
       await assert.rejects(session.finish(), /cannot be verified/);
@@ -90,7 +99,7 @@ if (process.platform === "win32") {
       try {
         await session.prepareDirectory(directory);
         const file = join(directory, "marker");
-        await writeFile(file, "public fixture");
+        await writePrivateFixture(file);
         await session.verifyFile(file);
         assert.equal(observation.children.length, 1);
         observation.children[0]!.stdout!.pause();
@@ -113,7 +122,7 @@ if (process.platform === "win32") {
     const directory = join(fixture, "private");
     preparePrivateWindowsDirectory(directory);
     const file = join(directory, "marker");
-    await writeFile(file, "public fixture");
+    await writePrivateFixture(file);
     const session = new WindowsStorageSession();
     await session.verifyFile(file);
     await session.finish();
