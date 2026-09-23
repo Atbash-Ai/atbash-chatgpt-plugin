@@ -1,5 +1,15 @@
 import assert from "node:assert/strict";
-import { link, lstat, mkdir, open, readFile, stat, symlink, writeFile } from "node:fs/promises";
+import {
+  copyFile,
+  link,
+  lstat,
+  mkdir,
+  open,
+  readFile,
+  stat,
+  symlink,
+  writeFile,
+} from "node:fs/promises";
 import { join } from "node:path";
 import test from "node:test";
 import {
@@ -24,6 +34,25 @@ async function writePrivateFixture(path: string, contents: string): Promise<void
   await writeFile(path, contents, { flag: "r+" });
 }
 if (process.platform === "win32") {
+  test("Windows ACL check ignores a poisoned SystemRoot executable", async () => {
+    const fixture = await createFixture();
+    const fakeRoot = join(fixture, "controlled-system-root");
+    const fakeDirectory = join(fakeRoot, "System32", "WindowsPowerShell", "v1.0");
+    await mkdir(fakeDirectory, { recursive: true });
+    await copyFile(process.execPath, join(fakeDirectory, "powershell.exe"));
+    const original = process.env.SystemRoot;
+    try {
+      process.env.SystemRoot = fakeRoot;
+      const directory = join(fixture, "private");
+      preparePrivateWindowsDirectory(directory);
+      verifyPrivateWindowsDirectory(directory);
+      assert.equal((await stat(directory)).isDirectory(), true);
+    } finally {
+      if (original === undefined) delete process.env.SystemRoot;
+      else process.env.SystemRoot = original;
+    }
+  });
+
   test("Windows bootstrap ACL: only an empty private file can be adopted before secret writes", async () => {
     const fixture = await createFixture();
     const directory = join(fixture, "private");

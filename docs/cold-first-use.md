@@ -28,6 +28,12 @@ The PowerShell helper accepts only public paths and an operation name. It never
 receives a key. It runs without a shell association or visible window, with a
 deadline and bounded output. Errors do not echo paths or exception details.
 Unsupported platforms and unverifiable permissions fail closed.
+Both the one-shot ACL check and the bootstrap session resolve Windows PowerShell
+through the operating-system object namespace before spawning it. A caller's
+`SystemRoot` or `PATH` cannot select the program that returns an ACL verdict;
+the child receives the resolved Windows root. The Windows fixture places a real
+executable under a poisoned `SystemRoot` and requires bootstrap to use the
+trusted helper before generating an identity.
 
 Validation examines every raw DACL entry instead of relying on the high-level
 rule projection, which can omit rule types or discard callback conditions. Only

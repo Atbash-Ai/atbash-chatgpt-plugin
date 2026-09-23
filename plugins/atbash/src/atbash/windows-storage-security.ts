@@ -1,5 +1,6 @@
 import { spawnSync } from "node:child_process";
-import { isAbsolute, join } from "node:path";
+import { isAbsolute } from "node:path";
+import { trustedWindowsPowerShell } from "./windows-system-powershell.js";
 
 // This helper handles paths and ACLs only. Private key material must never enter
 // its input, argv, output or errors. Each call independently verifies current ACLs.
@@ -175,10 +176,8 @@ function check(
   files?: readonly string[],
 ): void {
   if (process.platform !== "win32") throw new Error("Windows private storage is unsupported here.");
-  const systemRoot = process.env.SystemRoot;
-  if (!systemRoot || !isAbsolute(systemRoot) || !isAbsolute(path))
-    throw new Error("Windows private storage cannot be verified.");
-  const executable = join(systemRoot, "System32", "WindowsPowerShell", "v1.0", "powershell.exe");
+  if (!isAbsolute(path)) throw new Error("Windows private storage cannot be verified.");
+  const { executable, env } = trustedWindowsPowerShell();
   const result = spawnSync(
     executable,
     [
@@ -191,6 +190,7 @@ function check(
     {
       input: JSON.stringify({ operation, path, ...(files === undefined ? {} : { files }) }),
       encoding: "utf8",
+      env,
       windowsHide: true,
       shell: false,
       timeout: 20_000,

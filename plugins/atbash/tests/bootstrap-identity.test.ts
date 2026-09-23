@@ -1,7 +1,9 @@
 import assert from "node:assert/strict";
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { createHash } from "node:crypto";
+import { realpathSync } from "node:fs";
 import {
+  copyFile,
   lstat,
   mkdir,
   readFile,
@@ -43,7 +45,7 @@ const spawnHelper = childProcess.spawn;
 childProcess.spawn = (...args) => {
   const child = spawnHelper(...args);
   if (String(args[0]).toLowerCase().endsWith('powershell.exe')) {
-    const state = {closed:false,pid:child.pid};
+    const state = {closed:false,pid:child.pid,executable:String(args[0])};
     helpers.push(state);
     child.once('close', () => { state.closed = true; });
     const write = child.stdin.write.bind(child.stdin);
@@ -280,6 +282,7 @@ WindowsStorageSession.prototype.verifyStorage = async function(...args) {
   return verifyStorage.apply(this,args);
 };
 const {bootstrapWindowsIdentity} = await import(pathToFileURL(resolve('plugins/atbash/dist-tests/src/atbash/bootstrap-identity.js')).href);
+if (mode === 'poisoned-system-root') process.env.SystemRoot = join(home, 'controlled-system-root');
 let result;
 let failed = false;
 let message;
@@ -293,7 +296,7 @@ try {
   else if (mode === 'override-path') result = await bootstrapWindowsIdentity({keyPath:''});
   else result = await bootstrapWindowsIdentity();
 } catch (error) { failed = true; message = error.message; }
-process.stdout.write(JSON.stringify({failed,message,result,generated,generatedPubkey,storageCalls,secretWrites,writtenBytes,encodedLength,partialVerified,replacementVerified,replacementOriginal,replacementFailure,preClaimPinObserved,hardlinkVerified,publications,boundaries,helperCount:helpers.length,helpersClosed:helpers.every(h=>h.closed),helperRequests,elapsedMs:Math.round(performance.now()-started)}));
+process.stdout.write(JSON.stringify({failed,message,result,generated,generatedPubkey,storageCalls,secretWrites,writtenBytes,encodedLength,partialVerified,replacementVerified,replacementOriginal,replacementFailure,preClaimPinObserved,hardlinkVerified,publications,boundaries,helperCount:helpers.length,helpersClosed:helpers.every(h=>h.closed),helperExecutables:helpers.map(h=>h.executable),helperRequests,elapsedMs:Math.round(performance.now()-started)}));
 `;
 
 interface ChildResult {
@@ -316,6 +319,7 @@ interface ChildResult {
   boundaries: string[];
   helperCount: number;
   helpersClosed: boolean;
+  helperExecutables: string[];
   helperRequests: { operation: string; sequence: number }[];
   elapsedMs: number;
 }
@@ -538,6 +542,41 @@ async function snapshotFixture(home: string) {
 }
 
 if (process.platform === "win32") {
+  test("bootstrap rejects poisoned SystemRoot helper before key generation", async () => {
+    const home = await createFixture();
+    const fakeDirectory = join(
+      home,
+      "controlled-system-root",
+      "System32",
+      "WindowsPowerShell",
+      "v1.0",
+    );
+    await mkdir(fakeDirectory, { recursive: true });
+    const fakeExecutable = join(fakeDirectory, "powershell.exe");
+    await copyFile(process.execPath, fakeExecutable);
+    // This is an actual executable in the directory chosen by the old code.
+    const control = spawnSync(fakeExecutable, ["-e", "process.stdout.write('controlled-helper')"], {
+      encoding: "utf8",
+      windowsHide: true,
+      shell: false,
+    });
+    assert.equal(control.status, 0);
+    assert.equal(control.stdout, "controlled-helper");
+
+    const result = await run(home, "poisoned-system-root");
+    const trustedExecutable = realpathSync.native(
+      String.raw`\\?\GLOBALROOT\SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe`,
+    );
+    assert.equal(result.failed, false);
+    assert.equal(result.result?.state, "created");
+    assert.equal(result.generated, 1);
+    assert.equal(result.secretWrites, 1);
+    assert.equal(result.publications, 1);
+    assert.deepEqual(result.helperExecutables, [trustedExecutable]);
+    assert.notEqual(result.helperExecutables[0]?.toLowerCase(), fakeExecutable.toLowerCase());
+    assert.equal(result.helpersClosed, true);
+  });
+
   test("bootstrap fixture refuses inherited Node preloads before isolated startup", async () => {
     const home = await createFixture();
     const preload = join(home, "harmless-preload.cjs");

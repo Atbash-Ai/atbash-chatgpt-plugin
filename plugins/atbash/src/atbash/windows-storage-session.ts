@@ -1,8 +1,9 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { isAbsolute, join } from "node:path";
+import { isAbsolute } from "node:path";
 import { performance } from "node:perf_hooks";
 import { WINDOWS_STORAGE_CHECKS } from "./windows-storage-security.js";
+import { trustedWindowsPowerShell } from "./windows-system-powershell.js";
 
 const FAILURE = "Windows private storage cannot be verified.";
 const REQUEST_MS = 20_000;
@@ -108,16 +109,10 @@ export class WindowsStorageSession {
   #cleanup: Promise<void> | undefined;
 
   constructor() {
-    const systemRoot = process.env.SystemRoot;
-    if (
-      arguments.length !== 0 ||
-      process.platform !== "win32" ||
-      !systemRoot ||
-      !isAbsolute(systemRoot)
-    )
-      throw new Error(FAILURE);
+    if (arguments.length !== 0) throw new Error(FAILURE);
+    const { executable, env } = trustedWindowsPowerShell();
     this.#child = spawn(
-      join(systemRoot, "System32", "WindowsPowerShell", "v1.0", "powershell.exe"),
+      executable,
       [
         "-NoLogo",
         "-NoProfile",
@@ -125,7 +120,7 @@ export class WindowsStorageSession {
         "-EncodedCommand",
         Buffer.from(SCRIPT, "utf16le").toString("base64"),
       ],
-      { windowsHide: true, shell: false, stdio: ["pipe", "pipe", "pipe"] },
+      { env, windowsHide: true, shell: false, stdio: ["pipe", "pipe", "pipe"] },
     );
     this.#lifetime = setTimeout(() => this.#poison(), LIFETIME_MS);
     this.#child.once("exit", (code, signal) => {
