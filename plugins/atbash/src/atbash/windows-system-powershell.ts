@@ -1,4 +1,5 @@
 import { lstatSync, realpathSync, statSync } from "node:fs";
+import { userInfo } from "node:os";
 import { dirname, isAbsolute, win32 } from "node:path";
 
 const FAILURE = "Windows private storage cannot be verified.";
@@ -31,10 +32,12 @@ export function trustedWindowsPowerShell(): {
     if (!candidate || !/^[A-Za-z]:\\/.test(candidate) || !/\\AppData\\Local\\?$/i.test(candidate))
       throw new Error(FAILURE);
     const localAppData = realpathSync.native(candidate);
+    const accountProfile = realpathSync.native(userInfo().homedir);
     if (
       !/^[A-Za-z]:\\/.test(localAppData) ||
       !/\\AppData\\Local$/i.test(localAppData) ||
       localAppData.toLowerCase() !== win32.normalize(candidate).replace(/\\$/, "").toLowerCase() ||
+      localAppData.toLowerCase() !== win32.join(accountProfile, "AppData", "Local").toLowerCase() ||
       lstatSync(candidate).isSymbolicLink() ||
       !statSync(localAppData).isDirectory()
     )

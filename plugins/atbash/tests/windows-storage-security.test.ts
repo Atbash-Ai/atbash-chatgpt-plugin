@@ -123,6 +123,32 @@ if (process.platform === "win32") {
     }
   });
 
+  test("Windows ACL helper rejects an ordinary forged AppData cache directory", async () => {
+    const fixture = await createFixture();
+    const forged = join(fixture, "AppData", "Local");
+    await mkdir(forged, { recursive: true });
+    const original = process.env.LOCALAPPDATA;
+    const originalSpawnSync = childProcess.spawnSync;
+    let launched = 0;
+    childProcess.spawnSync = ((...args: unknown[]) => {
+      launched++;
+      return Reflect.apply(originalSpawnSync, childProcess, args);
+    }) as typeof childProcess.spawnSync;
+    syncBuiltinESMExports();
+    try {
+      process.env.LOCALAPPDATA = forged;
+      assert.throws(() => preparePrivateWindowsDirectory(join(fixture, "private")), {
+        message: "Windows private storage cannot be verified.",
+      });
+      assert.equal(launched, 0, "a forged cache must be rejected before a helper starts");
+    } finally {
+      childProcess.spawnSync = originalSpawnSync;
+      syncBuiltinESMExports();
+      if (original === undefined) delete process.env.LOCALAPPDATA;
+      else process.env.LOCALAPPDATA = original;
+    }
+  });
+
   test("Windows bootstrap ACL: only an empty private file can be adopted before secret writes", async () => {
     const fixture = await createFixture();
     const directory = join(fixture, "private");

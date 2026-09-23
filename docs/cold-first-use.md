@@ -32,7 +32,7 @@ Both the one-shot ACL check and the bootstrap session resolve Windows PowerShell
 through the operating-system object namespace before spawning it. A caller's
 `SystemRoot` or `PATH` cannot select the program that returns an ACL verdict;
 the child receives only the resolved Windows root, its system module directory,
-and an existing canonical local AppData directory for PowerShell's module
+and the OS account's canonical local AppData directory for PowerShell's module
 analysis cache. Caller-supplied CLR profiler settings and module search paths
 are never inherited. A redirected cache directory is rejected before launch.
 The Windows fixture places a real
