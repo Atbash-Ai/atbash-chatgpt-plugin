@@ -164,8 +164,5 @@ test("the user-level installer writes the entry hooks.json declares, with the pl
   assert.equal(isAbsolute(interpreter), true);
   assert.equal(existsSync(interpreter), true);
   assert.equal(interpreter, process.execPath);
-  assert.equal(
-    parseHookCommand(installedHook.commandWindows)?.interpreter,
-    process.execPath,
-  );
+  assert.equal(parseHookCommand(installedHook.commandWindows)?.interpreter, process.execPath);
 });
