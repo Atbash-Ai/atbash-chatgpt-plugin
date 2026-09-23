@@ -31,7 +31,8 @@ Unsupported platforms and unverifiable permissions fail closed.
 Both the one-shot ACL check and the bootstrap session resolve Windows PowerShell
 through the operating-system object namespace before spawning it. A caller's
 `SystemRoot` or `PATH` cannot select the program that returns an ACL verdict;
-the child receives the resolved Windows root. The Windows fixture places a real
+the child receives only the resolved Windows root and no inherited CLR profiler
+or PowerShell module path settings. The Windows fixture places a real
 executable under a poisoned `SystemRoot` and requires bootstrap to use the
 trusted helper before generating an identity.
 

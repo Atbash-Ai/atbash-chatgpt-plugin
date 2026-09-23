@@ -1,4 +1,6 @@
 import assert from "node:assert/strict";
+import childProcess from "node:child_process";
+import { realpathSync } from "node:fs";
 import {
   copyFile,
   link,
@@ -10,7 +12,8 @@ import {
   symlink,
   writeFile,
 } from "node:fs/promises";
-import { join } from "node:path";
+import { syncBuiltinESMExports } from "node:module";
+import { dirname, join } from "node:path";
 import test from "node:test";
 import {
   createFixture,
@@ -34,6 +37,54 @@ async function writePrivateFixture(path: string, contents: string): Promise<void
   await writeFile(path, contents, { flag: "r+" });
 }
 if (process.platform === "win32") {
+  test("Windows ACL helper rejects inherited profiler and module-path injection", async () => {
+    const fixture = await createFixture();
+    const hostileModules = join(fixture, "controlled-modules");
+    await mkdir(hostileModules);
+    const originalEnvironment = {
+      COR_ENABLE_PROFILING: process.env.COR_ENABLE_PROFILING,
+      COR_PROFILER: process.env.COR_PROFILER,
+      COR_PROFILER_PATH: process.env.COR_PROFILER_PATH,
+      PSModulePath: process.env.PSModulePath,
+    };
+    const originalSpawnSync = childProcess.spawnSync;
+    let launchedEnvironment: NodeJS.ProcessEnv | undefined;
+    childProcess.spawnSync = ((...args: unknown[]) => {
+      launchedEnvironment = (args[2] as { env?: NodeJS.ProcessEnv } | undefined)?.env;
+      // Forward to the real Windows executable. No ACL reply is replaced.
+      return Reflect.apply(originalSpawnSync, childProcess, args);
+    }) as typeof childProcess.spawnSync;
+    syncBuiltinESMExports();
+    try {
+      process.env.COR_ENABLE_PROFILING = "1";
+      process.env.COR_PROFILER = "{9F0F2BA3-E62E-4CA0-AD8E-33D79367C339}";
+      process.env.COR_PROFILER_PATH = join(fixture, "controlled-profiler.dll");
+      process.env.PSModulePath = hostileModules;
+      const directory = join(fixture, "private");
+      preparePrivateWindowsDirectory(directory);
+      verifyPrivateWindowsDirectory(directory);
+      assert.equal((await stat(directory)).isDirectory(), true);
+    } finally {
+      childProcess.spawnSync = originalSpawnSync;
+      syncBuiltinESMExports();
+      for (const [name, value] of Object.entries(originalEnvironment)) {
+        if (value === undefined) delete process.env[name];
+        else process.env[name] = value;
+      }
+    }
+    const trustedExecutable = realpathSync.native(
+      String.raw`\\?\GLOBALROOT\SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe`,
+    );
+    assert.deepEqual(Object.keys(launchedEnvironment ?? {}).sort(), [
+      "PSModulePath",
+      "SystemRoot",
+      "windir",
+    ]);
+    assert.equal(launchedEnvironment?.PSModulePath, join(dirname(trustedExecutable), "Modules"));
+    assert.equal(launchedEnvironment?.COR_ENABLE_PROFILING, undefined);
+    assert.equal(launchedEnvironment?.COR_PROFILER_PATH, undefined);
+  });
+
   test("Windows ACL check ignores a poisoned SystemRoot executable", async () => {
     const fixture = await createFixture();
     const fakeRoot = join(fixture, "controlled-system-root");

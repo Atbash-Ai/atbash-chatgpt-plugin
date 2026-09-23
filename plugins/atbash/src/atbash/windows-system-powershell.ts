@@ -22,12 +22,18 @@ export function trustedWindowsPowerShell(): {
       throw new Error(FAILURE);
     const systemRoot = dirname(dirname(dirname(dirname(executable))));
     if (!/^[A-Za-z]:\\/.test(systemRoot)) throw new Error(FAILURE);
-    const env = Object.fromEntries(
-      Object.entries(process.env).filter(([name]) => !/^(systemroot|windir)$/i.test(name)),
-    );
+    const modulePath = `${dirname(executable)}\\Modules`;
+    if (!statSync(modulePath).isDirectory()) throw new Error(FAILURE);
     return {
       executable,
-      env: { ...env, SystemRoot: systemRoot, windir: systemRoot },
+      // PowerShell hosts the CLR. Inheriting COR_*, CORECLR_* or PSModulePath
+      // would let caller-controlled environment state load code into the ACL
+      // verifier. Its encoded command needs only the trusted Windows root.
+      env: {
+        SystemRoot: systemRoot,
+        windir: systemRoot,
+        PSModulePath: modulePath,
+      },
     };
   } catch {
     // No PATH, SystemRoot or other attacker-supplied fallback is safe here.
