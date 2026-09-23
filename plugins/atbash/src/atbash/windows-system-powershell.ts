@@ -1,5 +1,5 @@
-import { realpathSync, statSync } from "node:fs";
-import { dirname, isAbsolute } from "node:path";
+import { lstatSync, realpathSync, statSync } from "node:fs";
+import { dirname, isAbsolute, win32 } from "node:path";
 
 const FAILURE = "Windows private storage cannot be verified.";
 // GLOBALROOT starts at the Windows object-manager root. Environment variables
@@ -24,6 +24,21 @@ export function trustedWindowsPowerShell(): {
     if (!/^[A-Za-z]:\\/.test(systemRoot)) throw new Error(FAILURE);
     const modulePath = `${dirname(executable)}\\Modules`;
     if (!statSync(modulePath).isDirectory()) throw new Error(FAILURE);
+    // Windows PowerShell reads its module-analysis cache from LOCALAPPDATA.
+    // Keep that one cache location only when it is the existing canonical
+    // local-drive AppData directory, never an inherited arbitrary path.
+    const candidate = process.env.LOCALAPPDATA;
+    if (!candidate || !/^[A-Za-z]:\\/.test(candidate) || !/\\AppData\\Local\\?$/i.test(candidate))
+      throw new Error(FAILURE);
+    const localAppData = realpathSync.native(candidate);
+    if (
+      !/^[A-Za-z]:\\/.test(localAppData) ||
+      !/\\AppData\\Local$/i.test(localAppData) ||
+      localAppData.toLowerCase() !== win32.normalize(candidate).replace(/\\$/, "").toLowerCase() ||
+      lstatSync(candidate).isSymbolicLink() ||
+      !statSync(localAppData).isDirectory()
+    )
+      throw new Error(FAILURE);
     return {
       executable,
       // PowerShell hosts the CLR. Inheriting COR_*, CORECLR_* or PSModulePath
@@ -33,6 +48,7 @@ export function trustedWindowsPowerShell(): {
         SystemRoot: systemRoot,
         windir: systemRoot,
         PSModulePath: modulePath,
+        LOCALAPPDATA: localAppData,
       },
     };
   } catch {

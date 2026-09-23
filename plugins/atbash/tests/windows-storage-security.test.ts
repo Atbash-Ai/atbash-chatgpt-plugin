@@ -76,11 +76,13 @@ if (process.platform === "win32") {
       String.raw`\\?\GLOBALROOT\SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe`,
     );
     assert.deepEqual(Object.keys(launchedEnvironment ?? {}).sort(), [
+      "LOCALAPPDATA",
       "PSModulePath",
       "SystemRoot",
       "windir",
     ]);
     assert.equal(launchedEnvironment?.PSModulePath, join(dirname(trustedExecutable), "Modules"));
+    assert.equal(launchedEnvironment?.LOCALAPPDATA, realpathSync.native(process.env.LOCALAPPDATA!));
     assert.equal(launchedEnvironment?.COR_ENABLE_PROFILING, undefined);
     assert.equal(launchedEnvironment?.COR_PROFILER_PATH, undefined);
   });
@@ -101,6 +103,23 @@ if (process.platform === "win32") {
     } finally {
       if (original === undefined) delete process.env.SystemRoot;
       else process.env.SystemRoot = original;
+    }
+  });
+
+  test("Windows ACL helper rejects a redirected module-analysis cache", async () => {
+    const fixture = await createFixture();
+    const redirected = join(fixture, "AppData", "Local");
+    await mkdir(dirname(redirected), { recursive: true });
+    await symlink(process.env.LOCALAPPDATA!, redirected, "junction");
+    const original = process.env.LOCALAPPDATA;
+    try {
+      process.env.LOCALAPPDATA = redirected;
+      assert.throws(() => preparePrivateWindowsDirectory(join(fixture, "private")), {
+        message: "Windows private storage cannot be verified.",
+      });
+    } finally {
+      if (original === undefined) delete process.env.LOCALAPPDATA;
+      else process.env.LOCALAPPDATA = original;
     }
   });
 

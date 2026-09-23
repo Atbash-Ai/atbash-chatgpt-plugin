@@ -9,6 +9,7 @@ import {
   preparePrivateWindowsFile,
   verifyPrivateWindowsStorage,
 } from "../src/atbash/windows-storage-security.js";
+import { trustedWindowsPowerShell } from "../src/atbash/windows-system-powershell.js";
 import { createFixture } from "./windows-acl-fixture.js";
 
 if (process.platform === "win32") {
@@ -101,10 +102,7 @@ if (process.platform === "win32") {
       childProcess,
       "spawnSync",
       (executable: string, args: string[], options: object) => {
-        assert.equal(
-          executable,
-          join(process.env.SystemRoot!, "System32", "WindowsPowerShell", "v1.0", "powershell.exe"),
-        );
+        assert.equal(executable, trustedWindowsPowerShell().executable);
         assert.deepEqual(args.slice(0, 4), [
           "-NoLogo",
           "-NoProfile",
@@ -116,6 +114,7 @@ if (process.platform === "win32") {
         assert.deepEqual(options, {
           input: JSON.stringify({ operation: "prepare-directory", path: "C:\\public-fixture" }),
           encoding: "utf8",
+          env: trustedWindowsPowerShell().env,
           windowsHide: true,
           shell: false,
           timeout: 20_000,
