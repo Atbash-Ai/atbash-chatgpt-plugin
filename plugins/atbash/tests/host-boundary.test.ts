@@ -103,7 +103,9 @@ interface RunResult {
 
 function runHook(entry: string, env: NodeJS.ProcessEnv, cwd = process.cwd()): Promise<RunResult> {
   const home = mkdtempSync(join(tmpdir(), "atbash-hook-home-"));
-  const started = Date.now();
+  // Monotonic, not Date.now(): every timing bound below is measured against this, and a wall
+  // clock that steps (WSL2 resyncing to the host, NTP) made a 1.5 s deadline deny read 518 ms once.
+  const started = process.hrtime.bigint();
   return new Promise((resolve) => {
     const child = spawn(process.execPath, [entry], {
       cwd,
@@ -125,7 +127,12 @@ function runHook(entry: string, env: NodeJS.ProcessEnv, cwd = process.cwd()): Pr
     child.stdin.end(JSON.stringify(makeHookInput()));
     child.on("close", (code) => {
       rmSync(home, { force: true, recursive: true });
-      resolve({ code, stdout, stderr, wallMs: Date.now() - started });
+      resolve({
+        code,
+        stdout,
+        stderr,
+        wallMs: Number((process.hrtime.bigint() - started) / 1_000_000n),
+      });
     });
   });
 }
@@ -182,7 +189,7 @@ function runAgainstNonReadingHost(
     const consumer = spawn(process.execPath, ["-e", "setTimeout(() => {}, 120000)"], {
       stdio: ["pipe", "ignore", "ignore"],
     });
-    const started = Date.now();
+    const started = process.hrtime.bigint();
     const child = spawn(process.execPath, [entry], {
       cwd,
       env: { PATH: process.env.PATH, ...env },
@@ -199,7 +206,13 @@ function runAgainstNonReadingHost(
     child.on("close", (code) => {
       clearTimeout(guard);
       consumer.kill();
-      resolve({ code, stdout: "", stderr, wallMs: Date.now() - started, killed });
+      resolve({
+        code,
+        stdout: "",
+        stderr,
+        wallMs: Number((process.hrtime.bigint() - started) / 1_000_000n),
+        killed,
+      });
     });
   });
 }
@@ -375,7 +388,7 @@ test("when stdout cannot be written the shim exits 2, never 0 with an empty outp
   });
   try {
     const result = await new Promise<RunResult>((resolve) => {
-      const started = Date.now();
+      const started = process.hrtime.bigint();
       const child = spawn(process.execPath, [join(dir, "pre-tool-use.cjs")], {
         cwd: dir,
         env: { PATH: process.env.PATH, ATBASH_HOOK_DEADLINE_MS: "1000" },
@@ -386,7 +399,12 @@ test("when stdout cannot be written the shim exits 2, never 0 with an empty outp
       child.stdout.destroy();
       child.stdin.end(JSON.stringify(makeHookInput()));
       child.on("close", (code) =>
-        resolve({ code, stdout: "", stderr, wallMs: Date.now() - started }),
+        resolve({
+          code,
+          stdout: "",
+          stderr,
+          wallMs: Number((process.hrtime.bigint() - started) / 1_000_000n),
+        }),
       );
     });
     assert.equal(result.code, 2, `exit ${result.code}, stderr ${JSON.stringify(result.stderr)}`);
@@ -430,9 +448,9 @@ test("a runtime that logs to stdout and then hangs is still denied at the deadli
 });
 
 test("a decision the bundle wrote is delivered in full when the host reads late", async () => {
-  // A 2,000-character decision (under the byte bound) queued by a bundle that lingers past the
-  // deadline: the deadline must not end the process before those bytes are out, and the host,
-  // reading only after the deadline has fired, still gets every byte.
+  // A 2,000-character decision (under the byte bound) written by a bundle that lingers past the
+  // deadline: the write is synchronous and complete before the deadline can fire, and the host,
+  // reading only after the deadline has fired, still gets every byte from the pipe.
   const dir = withDamagedRuntime((d) => {
     writeFileSync(
       join(d, "pre-tool-use-main.cjs"),
@@ -441,7 +459,7 @@ test("a decision the bundle wrote is delivered in full when the host reads late"
   });
   try {
     const result = await new Promise<RunResult>((resolve) => {
-      const started = Date.now();
+      const started = process.hrtime.bigint();
       const child = spawn(process.execPath, [join(dir, "pre-tool-use.cjs")], {
         cwd: dir,
         env: { PATH: process.env.PATH, ATBASH_HOOK_DEADLINE_MS: "1500" },
@@ -454,7 +472,14 @@ test("a decision the bundle wrote is delivered in full when the host reads late"
       child.stderr.on("data", (d) => (stderr += d));
       child.stdin.end(JSON.stringify(makeHookInput()));
       setTimeout(() => child.stdout.resume(), 2_000);
-      child.on("close", (code) => resolve({ code, stdout, stderr, wallMs: Date.now() - started }));
+      child.on("close", (code) =>
+        resolve({
+          code,
+          stdout,
+          stderr,
+          wallMs: Number((process.hrtime.bigint() - started) / 1_000_000n),
+        }),
+      );
     });
     assert.equal(result.code, 0, result.stderr);
     const decision = JSON.parse(result.stdout) as {
@@ -738,9 +763,9 @@ test("a permit followed by a lingering handle is still denied at the deadline", 
 
 test("a bundle deny after stdout closes exits with a transport error; host blocking is unverified", async () => {
   // The host has gone away (its read end is closed) when the bundle answers. The write fails
-  // asynchronously: before the callback existed, nothing threw, nothing was written, the loop
-  // drained and the process ended 0 with an empty stdout - a permit. Now the callback's error is a
-  // transport-error exit with the reason on stderr; this does not prove Codex blocks. (A stream the bundle itself destroyed is not the same
+  // (EPIPE): before the shim checked the write's outcome, nothing was written, the loop drained
+  // and the process ended 0 with an empty stdout - a permit. Now the synchronous write's error is
+  // a blocking exit with the reason on stderr. (A stream the bundle itself destroyed is not the same
   // case: on Windows stdio pipes stay writable after destroy() and the deny is simply delivered.)
   const dir = withDamagedRuntime((d) => {
     writeFileSync(
@@ -750,7 +775,7 @@ test("a bundle deny after stdout closes exits with a transport error; host block
   });
   try {
     const result = await new Promise<RunResult>((resolve) => {
-      const started = Date.now();
+      const started = process.hrtime.bigint();
       const child = spawn(process.execPath, [join(dir, "pre-tool-use.cjs")], {
         cwd: dir,
         env: { PATH: process.env.PATH, ATBASH_HOOK_DEADLINE_MS: "6000" },
@@ -761,7 +786,12 @@ test("a bundle deny after stdout closes exits with a transport error; host block
       child.stdout.destroy();
       child.stdin.end(JSON.stringify(makeHookInput()));
       child.on("close", (code) =>
-        resolve({ code, stdout: "", stderr, wallMs: Date.now() - started }),
+        resolve({
+          code,
+          stdout: "",
+          stderr,
+          wallMs: Number((process.hrtime.bigint() - started) / 1_000_000n),
+        }),
       );
     });
     assert.equal(result.code, 2, `exit ${result.code}, stderr ${JSON.stringify(result.stderr)}`);
@@ -814,11 +844,13 @@ test("a bundle that returns without answering is denied at exit, never a permit"
 test("a second load of the shim never appends a second decision", async () => {
   // Two paths to the same shim file are two require-cache entries. The second load finds the
   // channel taken, writes the one deny on stdout and ends the process with exit 0; the first
-  // load's exit backstop sees the process-wide marker and adds nothing. No second deadline, no
-  // second bundle load, and never two decisions on stdout - before the fix the second listener
-  // appended "ended without a decision" after the real deny, two JSON objects the host cannot
-  // parse: a permit. A second load is not exempted because nothing can tell the shim's own copy
-  // from a decoy that copied it.
+  // load's exit backstop sees the mark on the channel function and adds nothing. No second
+  // deadline, no second bundle load, and never two decisions on stdout - before the fix the second
+  // listener appended "ended without a decision" after the real deny, two JSON objects the host
+  // cannot parse: a permit. A second load is not exempted because nothing can tell the shim's own
+  // copy from a decoy that copied it. (This is the ordering with process.exit working; a second
+  // load after a delivered deny with process.exit made a no-op in-process is the residual the
+  // shim header names, in the same class as patching fs.)
   const dir = withDamagedRuntime((d) => {
     copyFileSync(join(d, "pre-tool-use.cjs"), join(d, "pre-tool-use-copy.cjs"));
     writeFileSync(
@@ -968,8 +1000,8 @@ test("a sibling key on a channel deny never reaches the host", async () => {
 });
 
 test("an oversized reason is capped and still delivered as one parseable deny", async () => {
-  // The drain the shim waits for is bounded because the reason is: a bundle cannot queue megabytes
-  // and leave the host reading past its timeout. The cap keeps the decision a deny, marks the cut.
+  // The synchronous write is bounded because the reason is: a bundle cannot push megabytes at a
+  // host and leave it reading past its timeout. The cap keeps the decision a deny, marks the cut.
   const dir = withDamagedRuntime((d) => {
     writeFileSync(
       join(d, "pre-tool-use-main.cjs"),
@@ -1110,8 +1142,8 @@ test("a refused channel still denies on stdout even when process.exit was patche
 
 test("a small deny to a host that never reads is delivered into the pipe and the hook ends 0", async () => {
   // The other half of the non-reading-host case: a deny that fits the pipe's buffer is written in
-  // full whether or not anyone reads it yet, the write callback runs, and the hook ends 0 at once -
-  // the watchdog is for the deny that does not fit, never for the ordinary one.
+  // full whether or not anyone reads it yet, the synchronous write returns, and the hook ends 0 at
+  // once - the byte bound is what keeps every deny an ordinary one.
   const dir = withDamagedRuntime((d) => {
     writeFileSync(
       join(d, "pre-tool-use-main.cjs"),
@@ -1136,9 +1168,10 @@ test("a small deny to a host that never reads is delivered into the pipe and the
 test("a transport that never accepts the decision exits with an error; Codex may permit", async () => {
   // Defence in depth behind the byte bound: should the synchronous write to fd 1 never be
   // accepted (a full non-blocking pipe answers EAGAIN; here the transport is replaced at the
-  // file-descriptor level so it answers EAGAIN for good), the retry gives up within about a
-  // second and the shim ends with exit 2 and the reason on stderr - nothing on stdout, never a
-  // permit-shaped 0, never a wait for the host's timeout.
+  // file-descriptor level so it answers EAGAIN for good), the retry gives up at the stall budget
+  // (two seconds without an accepted byte; this path makes two writes at most, the answer's and
+  // the blocking exit's) and the shim ends with exit 2 and the reason on stderr - nothing on
+  // stdout, never a permit-shaped 0, never a wait for the host's timeout.
   const dir = withDamagedRuntime((d) => {
     writeFileSync(
       join(d, "decoy.cjs"),
@@ -1174,16 +1207,18 @@ test("a transport that never accepts the decision exits with an error; Codex may
       "",
       "nothing reached the host: the transport never accepted a byte",
     );
-    assert.ok(result.wallMs < 5_000, `did not give up: ${result.wallMs} ms`);
+    // Two stalls of at most two seconds each, plus two node start-ups on a loaded Windows runner
+    // (4.5 s measured): eight seconds keeps the bound about the budget, not the machine.
+    assert.ok(result.wallMs < 8_000, `did not give up: ${result.wallMs} ms`);
   } finally {
     rmSync(dir, { force: true, recursive: true });
   }
 });
 
 test("a decision cut short by an in-process exit is never a permit", async () => {
-  // The bundle answers a deny and, in the same synchronous turn, calls process.exit(0): the write
-  // callback cannot have run yet. The queued write still completes during shutdown (the deny is
-  // bounded under the pipe), so the host gets one complete deny - and the exit code must be 0,
+  // The bundle answers a deny and, in the same synchronous turn, calls process.exit(0): the deny was
+  // written synchronously before the exit was reached (bounded under the pipe), so the host gets
+  // one complete deny - and the exit code must be 0,
   // the one both hosts block on: a 2 here let Codex 0.154.0 run the tool call with the deny on
   // stdout (measured). Never a truncated or a second decision.
   const dir = withDamagedRuntime((d) => {
@@ -1296,7 +1331,7 @@ test("a host that closed stderr does not turn a diverted log line into a crash",
   });
   try {
     const result = await new Promise<RunResult>((resolve) => {
-      const started = Date.now();
+      const started = process.hrtime.bigint();
       const child = spawn(process.execPath, [join(dir, "pre-tool-use.cjs")], {
         cwd: dir,
         env: { PATH: process.env.PATH, ATBASH_HOOK_DEADLINE_MS: "1500" },
@@ -1307,7 +1342,12 @@ test("a host that closed stderr does not turn a diverted log line into a crash",
       child.stderr.destroy();
       child.stdin.end(JSON.stringify(makeHookInput()));
       child.on("close", (code) =>
-        resolve({ code, stdout, stderr: "", wallMs: Date.now() - started }),
+        resolve({
+          code,
+          stdout,
+          stderr: "",
+          wallMs: Number((process.hrtime.bigint() - started) / 1_000_000n),
+        }),
       );
     });
     assert.equal(result.code, 0, `exit ${result.code}`);
@@ -1317,6 +1357,547 @@ test("a host that closed stderr does not turn a diverted log line into a crash",
       `expected the deadline deny, got ${JSON.stringify(result.stdout)}`,
     );
     assert.ok(result.wallMs >= 1_400, `the judgment was cut short at ${result.wallMs} ms`);
+  } finally {
+    rmSync(dir, { force: true, recursive: true });
+  }
+});
+
+test("a transport that accepts one byte per stall never holds the hook past the host's hook timeout", async () => {
+  // A pipe that takes the deny a byte at a time, refusing (EAGAIN) between bytes, must not hold
+  // the hook past the host's 35 s timeout: a hook that times out is a permit on both hosts. Each
+  // accepted byte is progress, so the stall budget does not end this; the absolute give-up (two
+  // seconds past the configured deadline, 6 s here) does - exit 2 and the reason on stderr, and
+  // whatever prefix reached the host is not a complete decision (Claude Code blocks on the exit
+  // code; a host that cannot take a deny is the documented Codex residual). Before the bound, a
+  // 900-byte deny through this transport took over 45 s.
+  const reason = "x".repeat(800);
+  const dir = withDamagedRuntime((d) => {
+    writeFileSync(
+      join(d, "decoy.cjs"),
+      [
+        'const fs = require("node:fs");',
+        "const original = fs.writeSync;",
+        "let calls = 0;",
+        "fs.writeSync = function (fd, buffer, offset, length) {",
+        "  if (fd !== 1) return original.apply(this, arguments);",
+        "  calls += 1;",
+        "  if (calls % 3 !== 0) {",
+        '    const error = new Error("EAGAIN: resource temporarily unavailable, write");',
+        '    error.code = "EAGAIN";',
+        "    throw error;",
+        "  }",
+        "  return original.call(this, fd, buffer, offset, 1);",
+        "};",
+      ].join("\n") + "\n",
+    );
+    writeFileSync(
+      join(d, "pre-tool-use-main.cjs"),
+      `${ANSWER}(JSON.stringify({ hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: ${JSON.stringify(reason)} } }));\nsetInterval(() => {}, 1000);\n`,
+    );
+  });
+  try {
+    const result = await runHook(
+      join(dir, "pre-tool-use.cjs"),
+      {
+        ATBASH_HOOK_DEADLINE_MS: "6000",
+        NODE_OPTIONS: `--require "${join(dir, "decoy.cjs").split("\\").join("/")}"`,
+      },
+      dir,
+    );
+    assert.equal(
+      result.code,
+      2,
+      `exit ${result.code}, stdout ${JSON.stringify(result.stdout.slice(0, 80))}`,
+    );
+    assert.match(result.stderr, /could not be delivered/);
+    assert.doesNotMatch(
+      result.stdout,
+      /"permissionDecisionReason":"x{800}"/,
+      "the whole deny cannot have reached the host",
+    );
+    // The prefix that did reach the host is not a decision: not parseable at all, so no host can
+    // read a permit or a deny into it - the exit code is the whole answer.
+    assert.throws(() => JSON.parse(result.stdout), "the prefix on stdout parsed as a decision");
+    // The lower bound carries the meaning (the give-up, not the stall budget, ended it); the
+    // ceiling only has to sit under the host's timeout, so it leaves room for a loaded runner.
+    assert.ok(
+      result.wallMs >= 7_000 && result.wallMs < 12_000,
+      `ended at ${result.wallMs} ms, not at the give-up`,
+    );
+  } finally {
+    rmSync(dir, { force: true, recursive: true });
+  }
+});
+
+test("a channel slot whose getter throws is refused with a deny, not node's exit 1", async () => {
+  // A preload that installs an accessor on the channel symbol which throws on every read: the
+  // shim's guard must not throw out of the hook (node's exit 1, non-blocking for either host).
+  // An unreadable slot is a taken slot: the refusal deny with exit 0, once, and the accessor's
+  // error text never reaches the host.
+  const dir = withDamagedRuntime((d) => {
+    writeFileSync(
+      join(d, "decoy.cjs"),
+      'Object.defineProperty(globalThis, Symbol.for("atbash.hook.answer"), { get() { throw new Error("boom"); }, configurable: false });\n',
+    );
+    writeFileSync(join(d, "pre-tool-use-main.cjs"), "module.exports = 1;\n");
+  });
+  try {
+    const result = await runHook(
+      join(dir, "pre-tool-use.cjs"),
+      {
+        ATBASH_HOOK_DEADLINE_MS: "6000",
+        NODE_OPTIONS: `--require "${join(dir, "decoy.cjs").split("\\").join("/")}"`,
+      },
+      dir,
+    );
+    assert.equal(result.code, 0, `exit ${result.code}, stderr ${JSON.stringify(result.stderr)}`);
+    assert.match(result.stdout, DENY_SHAPE, `no deny on stdout: ${JSON.stringify(result.stdout)}`);
+    assert.match(result.stdout, /channel was already taken/);
+    assert.equal(result.stdout.match(/"permissionDecision":/g)?.length, 1);
+    assert.doesNotMatch(result.stderr, /boom/, "the accessor's error must not reach the host");
+  } finally {
+    rmSync(dir, { force: true, recursive: true });
+  }
+});
+
+test("a refusal whose own write fails behind another load's deny is a blocking exit, never a permit-shaped 0", async () => {
+  // process.exit made a no-op in-process; the first load writes the bundle's deny, complete on
+  // stdout; then stdout breaks (every write to fd 1 fails) and a second copy of the shim is
+  // loaded. Its refusal cannot be written, and its exit code is 2 whatever the first load's
+  // function claims: the mark on a function this load did not install is not evidence, and a 0
+  // with nothing of its own on stdout would be a permit-shaped answer for a preloaded decoy that
+  // carries the same mark. That the genuine deny sits behind a 2 here (a Codex permit; Claude
+  // Code blocks) needs process.exit neutered in-process - the residual the shim header names.
+  const dir = withDamagedRuntime((d) => {
+    copyFileSync(join(d, "pre-tool-use.cjs"), join(d, "pre-tool-use-copy.cjs"));
+    writeFileSync(join(d, "decoy.cjs"), "process.exit = function () {};\n");
+    writeFileSync(
+      join(d, "pre-tool-use-main.cjs"),
+      [
+        `${ANSWER}(JSON.stringify({ hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: "the first load's deny" } }));`,
+        'const fs = require("node:fs");',
+        "const original = fs.writeSync;",
+        "fs.writeSync = function (fd, ...rest) {",
+        "  if (fd !== 1) return original.call(this, fd, ...rest);",
+        '  const error = new Error("EPIPE: broken pipe, write");',
+        '  error.code = "EPIPE";',
+        "  throw error;",
+        "};",
+        'require("./pre-tool-use-copy.cjs");',
+      ].join("\n") + "\n",
+    );
+  });
+  try {
+    const result = await runHook(
+      join(dir, "pre-tool-use.cjs"),
+      {
+        ATBASH_HOOK_DEADLINE_MS: "6000",
+        NODE_OPTIONS: `--require "${join(dir, "decoy.cjs").split("\\").join("/")}"`,
+      },
+      dir,
+    );
+    assert.equal(result.code, 2, `exit ${result.code}, stderr ${JSON.stringify(result.stderr)}`);
+    assert.equal(
+      result.stdout.match(/"permissionDecision":/g)?.length,
+      1,
+      `not exactly one decision: ${JSON.stringify(result.stdout)}`,
+    );
+    assert.match(result.stdout, /the first load's deny/);
+    assert.match(result.stderr, /channel was already taken/);
+    assert.ok(result.wallMs < 5_000, `lingered ${result.wallMs} ms`);
+  } finally {
+    rmSync(dir, { force: true, recursive: true });
+  }
+});
+
+test("a refusal whose own write fails behind a forged mark is never a permit-shaped exit 0", async () => {
+  // A preload installs a decoy channel carrying the "decided" mark, and stdout cannot be written
+  // (the host's read end is gone; modelled at the file-descriptor level). The refusal's write
+  // fails and nothing is on stdout: the exit must be 2 - a 0 here is a permit on both hosts, and
+  // the mark on a function this load did not install proves nothing.
+  const dir = withDamagedRuntime((d) => {
+    writeFileSync(
+      join(d, "decoy.cjs"),
+      [
+        "const fn = function () {};",
+        "fn.decided = true;",
+        'Object.defineProperty(globalThis, Symbol.for("atbash.hook.answer"), { value: fn, writable: false, configurable: false });',
+        'const fs = require("node:fs");',
+        "const original = fs.writeSync;",
+        "fs.writeSync = function (fd, ...rest) {",
+        "  if (fd !== 1) return original.call(this, fd, ...rest);",
+        '  const error = new Error("EPIPE: broken pipe, write");',
+        '  error.code = "EPIPE";',
+        "  throw error;",
+        "};",
+      ].join("\n") + "\n",
+    );
+    writeFileSync(join(d, "pre-tool-use-main.cjs"), "module.exports = 1;\n");
+  });
+  try {
+    const result = await runHook(
+      join(dir, "pre-tool-use.cjs"),
+      {
+        ATBASH_HOOK_DEADLINE_MS: "6000",
+        NODE_OPTIONS: `--require "${join(dir, "decoy.cjs").split("\\").join("/")}"`,
+      },
+      dir,
+    );
+    assert.equal(result.stdout, "", "nothing could reach the host");
+    assert.equal(result.code, 2, `exit ${result.code} with an empty stdout is a permit`);
+    assert.match(result.stderr, /channel was already taken/);
+  } finally {
+    rmSync(dir, { force: true, recursive: true });
+  }
+});
+
+test("a channel accessor that reads undefined and then claims a decision is still denied", async () => {
+  // A preload installs a non-configurable accessor that answers undefined to the first read (so
+  // the shim takes the slot for free) and a function carrying the "decided" mark afterwards. The
+  // shim's own install then fails (the accessor is not configurable), and the blocking exit must
+  // not take that function's mark for a delivered decision: the deny is written, exit 0.
+  const dir = withDamagedRuntime((d) => {
+    writeFileSync(
+      join(d, "decoy.cjs"),
+      [
+        "let reads = 0;",
+        "const fn = function () {};",
+        "fn.decided = true;",
+        'Object.defineProperty(globalThis, Symbol.for("atbash.hook.answer"), { get() { return reads++ === 0 ? undefined : fn; }, configurable: false });',
+      ].join("\n") + "\n",
+    );
+    writeFileSync(join(d, "pre-tool-use-main.cjs"), "module.exports = 1;\n");
+  });
+  try {
+    const result = await runHook(
+      join(dir, "pre-tool-use.cjs"),
+      {
+        ATBASH_HOOK_DEADLINE_MS: "6000",
+        NODE_OPTIONS: `--require "${join(dir, "decoy.cjs").split("\\").join("/")}"`,
+      },
+      dir,
+    );
+    assert.equal(result.code, 0, `exit ${result.code}, stderr ${JSON.stringify(result.stderr)}`);
+    assert.match(result.stdout, DENY_SHAPE, `no deny on stdout: ${JSON.stringify(result.stdout)}`);
+    assert.match(result.stdout, /could not install its decision channel/);
+    assert.equal(result.stdout.match(/"permissionDecision":/g)?.length, 1);
+  } finally {
+    rmSync(dir, { force: true, recursive: true });
+  }
+});
+
+test("a transport that accepts one byte per call without refusing never holds the hook past the host's hook timeout", async () => {
+  // The other shape of a dribbling transport: every call accepts one byte and takes its time,
+  // never answering EAGAIN. Each byte is progress, so the stall budget never fires; the absolute
+  // give-up (two seconds past the configured deadline, 6 s here) ends it - exit 2, a prefix on
+  // stdout, inside the host's timeout. Before the clock moved to the loop, a 900-byte deny at
+  // 40 ms per byte held the hook for 44 s (measured), past the host's 35 s.
+  const reason = "y".repeat(800);
+  const dir = withDamagedRuntime((d) => {
+    writeFileSync(
+      join(d, "decoy.cjs"),
+      [
+        'const fs = require("node:fs");',
+        "const original = fs.writeSync;",
+        "fs.writeSync = function (fd, buffer, offset, length) {",
+        "  if (fd !== 1) return original.apply(this, arguments);",
+        "  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 40);",
+        "  return original.call(this, fd, buffer, offset, 1);",
+        "};",
+      ].join("\n") + "\n",
+    );
+    writeFileSync(
+      join(d, "pre-tool-use-main.cjs"),
+      `${ANSWER}(JSON.stringify({ hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: ${JSON.stringify(reason)} } }));\nsetInterval(() => {}, 1000);\n`,
+    );
+  });
+  try {
+    const result = await runHook(
+      join(dir, "pre-tool-use.cjs"),
+      {
+        ATBASH_HOOK_DEADLINE_MS: "6000",
+        NODE_OPTIONS: `--require "${join(dir, "decoy.cjs").split("\\").join("/")}"`,
+      },
+      dir,
+    );
+    assert.equal(
+      result.code,
+      2,
+      `exit ${result.code}, stdout ${JSON.stringify(result.stdout.slice(0, 80))}`,
+    );
+    assert.match(result.stderr, /could not be delivered/);
+    assert.doesNotMatch(
+      result.stdout,
+      /"permissionDecisionReason":"y{800}"/,
+      "the whole deny cannot have been written",
+    );
+    assert.throws(() => JSON.parse(result.stdout), "the prefix on stdout parsed as a decision");
+    assert.ok(
+      result.wallMs >= 7_000 && result.wallMs < 12_000,
+      `ended at ${result.wallMs} ms, not at the give-up`,
+    );
+  } finally {
+    rmSync(dir, { force: true, recursive: true });
+  }
+});
+
+test("a bundle that blanks fs.writeSync cannot turn the deny into an empty, permit-shaped exit", async () => {
+  // The write binding is captured when the shim loads, before the bundle runs: a bundle (or an
+  // instrumenting dependency inside it) that replaces fs.writeSync afterwards with a stub that
+  // claims success cannot lose the deny - before the capture that ended exit 0 with an empty
+  // stdout, a permit on both hosts. (A preload that replaces it before the shim loads is the
+  // in-process control the header lists.)
+  const dir = withDamagedRuntime((d) => {
+    writeFileSync(
+      join(d, "pre-tool-use-main.cjs"),
+      [
+        'const fs = require("node:fs");',
+        "fs.writeSync = function (fd, buffer, offset, length) {",
+        '  return typeof buffer === "string" ? Buffer.byteLength(buffer) : (length ?? buffer.length - (offset ?? 0));',
+        "};",
+        `${ANSWER}(JSON.stringify({ hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: "a blanked writeSync" } }));`,
+      ].join("\n") + "\n",
+    );
+  });
+  try {
+    const result = await runHook(
+      join(dir, "pre-tool-use.cjs"),
+      { ATBASH_HOOK_DEADLINE_MS: "6000" },
+      dir,
+    );
+    assert.equal(result.code, 0, `exit ${result.code}, stderr ${JSON.stringify(result.stderr)}`);
+    assert.match(result.stdout, DENY_SHAPE, `no deny on stdout: ${JSON.stringify(result.stdout)}`);
+    assert.match(result.stdout, /a blanked writeSync/);
+    assert.equal(result.stdout.match(/"permissionDecision":/g)?.length, 1);
+  } finally {
+    rmSync(dir, { force: true, recursive: true });
+  }
+});
+
+test("a bundle that blocks the event loop past the delivery give-up still gets its deny onto a healthy stdout", async () => {
+  // A synchronous stall inside the bundle that outlives the absolute give-up (two seconds past the
+  // configured 30 s deadline) but ends before the host's 35 s timeout: the deadline timer could
+  // not fire while the loop was blocked, so the exit backstop's deny is the last word - and it
+  // must be written, not refused by a clock that never allowed a first attempt (exit 2 with an
+  // empty stdout, a Codex permit). The write is attempted once whatever the time; the bounds cap
+  // retries only.
+  const dir = withDamagedRuntime((d) => {
+    writeFileSync(
+      join(d, "pre-tool-use-main.cjs"),
+      "Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 32_300);\n" +
+        'require("node:fs").writeSync(2, "stalled-until=" + Math.ceil(process.uptime() * 1000) + "\\n");\n' +
+        "module.exports = 1;\n",
+    );
+  });
+  try {
+    const result = await runHook(
+      join(dir, "pre-tool-use.cjs"),
+      { ATBASH_HOOK_DEADLINE_MS: "30000" },
+      dir,
+    );
+    assert.equal(result.code, 0, `exit ${result.code}, stderr ${JSON.stringify(result.stderr)}`);
+    assert.match(result.stdout, DENY_SHAPE, `no deny on stdout: ${JSON.stringify(result.stdout)}`);
+    assert.equal(result.stdout.match(/"permissionDecision":/g)?.length, 1);
+    // The stall outlives the give-up (32 s) and the ceiling is the host's 35 s timeout. The lower
+    // bound only proves the stall happened at all: under WSL the wall clock of a 32.6 s stall
+    // measured 31 862 ms (the guest's clock runs behind the host's), so it sits at 30 s.
+    assert.ok(result.wallMs >= 30_000 && result.wallMs < 35_000, `stalled ${result.wallMs} ms`);
+    // The bundle's own clock is the one the shim's give-up is measured on, and it is immune to
+    // the guest/host skew above: the stall ended past the 32 s ceiling, so the deadline timer
+    // (30 s) could not have fired first - the deny on stdout is the exit backstop's.
+    const stalledUntil = Number(/stalled-until=(\d+)/.exec(result.stderr)?.[1]);
+    assert.ok(stalledUntil >= 32_000, `the bundle's clock read ${stalledUntil} ms after the stall`);
+    assert.match(
+      result.stdout,
+      /ended without a decision/,
+      "the deny must be the exit backstop's, not the deadline timer's",
+    );
+  } finally {
+    rmSync(dir, { force: true, recursive: true });
+  }
+});
+
+test("a host that is merely slow to drain still gets a deny on stdout, never a blocking exit", async () => {
+  // The lower bound of the stall budget: a transport that refuses (EAGAIN) for the first 1.5 s of
+  // the process and then accepts is a host that is slow, not gone. The bundle's own deny must
+  // reach it with exit 0 - under the earlier ~1 s retry budget this ended exit 2 with nothing on
+  // stdout, which Codex 0.154.0 runs the tool call on. Pins the budget from below so a later
+  // "tighten the budget" change cannot pass the suite while losing the deny.
+  const dir = withDamagedRuntime((d) => {
+    writeFileSync(
+      join(d, "decoy.cjs"),
+      [
+        'const fs = require("node:fs");',
+        "const original = fs.writeSync;",
+        "fs.writeSync = function (fd, ...rest) {",
+        "  if (fd !== 1 || process.uptime() * 1000 >= 1500) return original.call(this, fd, ...rest);",
+        '  const error = new Error("EAGAIN: resource temporarily unavailable, write");',
+        '  error.code = "EAGAIN";',
+        "  throw error;",
+        "};",
+      ].join("\n") + "\n",
+    );
+    writeFileSync(
+      join(d, "pre-tool-use-main.cjs"),
+      `${ANSWER}(JSON.stringify({ hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: "the judge's own verdict" } }));\n`,
+    );
+  });
+  try {
+    const result = await runHook(
+      join(dir, "pre-tool-use.cjs"),
+      {
+        ATBASH_HOOK_DEADLINE_MS: "6000",
+        NODE_OPTIONS: `--require "${join(dir, "decoy.cjs").split("\\").join("/")}"`,
+      },
+      dir,
+    );
+    assert.equal(result.code, 0, `exit ${result.code}, stderr ${JSON.stringify(result.stderr)}`);
+    assert.match(result.stdout, DENY_SHAPE, `no deny on stdout: ${JSON.stringify(result.stdout)}`);
+    assert.match(result.stdout, /the judge's own verdict/);
+    assert.equal(result.stdout.match(/"permissionDecision":/g)?.length, 1);
+  } finally {
+    rmSync(dir, { force: true, recursive: true });
+  }
+});
+
+test("a transport that accepts the deny slowly but steadily still gets the whole deny before the host's timeout", async () => {
+  // A pipe that takes one byte per call, 30 ms apart, without ever refusing: slow, not stalled.
+  // A fixed per-write budget abandoned this at two seconds with a fragment on stdout and exit 2 -
+  // unparseable plus a non-blocking code, a Codex permit - where the earlier design delivered the
+  // whole deny. Progress resets the stall clock, so the deny (about 160 bytes, about 5 s here) is
+  // delivered in full with exit 0, well inside the give-up two seconds past the default deadline.
+  const dir = withDamagedRuntime((d) => {
+    writeFileSync(
+      join(d, "decoy.cjs"),
+      [
+        'const fs = require("node:fs");',
+        "const original = fs.writeSync;",
+        "fs.writeSync = function (fd, buffer, offset, length) {",
+        "  if (fd !== 1) return original.apply(this, arguments);",
+        "  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 30);",
+        "  return original.call(this, fd, buffer, offset, 1);",
+        "};",
+      ].join("\n") + "\n",
+    );
+    writeFileSync(
+      join(d, "pre-tool-use-main.cjs"),
+      `${ANSWER}(JSON.stringify({ hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: "a slow but steady transport" } }));\n`,
+    );
+  });
+  try {
+    const result = await runHook(
+      join(dir, "pre-tool-use.cjs"),
+      { NODE_OPTIONS: `--require "${join(dir, "decoy.cjs").split("\\").join("/")}"` },
+      dir,
+    );
+    assert.equal(result.code, 0, `exit ${result.code}, stderr ${JSON.stringify(result.stderr)}`);
+    assert.match(result.stdout, DENY_SHAPE, `no deny on stdout: ${JSON.stringify(result.stdout)}`);
+    assert.match(result.stdout, /a slow but steady transport/);
+    assert.equal(result.stdout.match(/"permissionDecision":/g)?.length, 1);
+    assert.ok(result.wallMs >= 3_000 && result.wallMs < 30_000, `took ${result.wallMs} ms`);
+  } finally {
+    rmSync(dir, { force: true, recursive: true });
+  }
+});
+
+for (const [lie, label] of [
+  ["Number.NaN", "not a number"],
+  ["length + 1", "more bytes than were offered"],
+  ["-1", "a negative count"],
+] as const) {
+  test(`a transport that reports ${label} accepted is an error, never a delivered decision`, async () => {
+    // fs.writeSync is captured at load, but what the captured function does is still the
+    // process's: a replaced descriptor layer (here a preload) that writes nothing and answers a
+    // count the shim did not ask for must not end the delivery loop as if the deny were on
+    // stdout. Before the count was checked, NaN or an oversized count ended the loop, the shim
+    // marked the decision delivered and exited 0 with an EMPTY stdout - a Codex permit. Now an
+    // impossible count is an error like any other: exit 2, the reason on stderr, nothing on
+    // stdout.
+    const dir = withDamagedRuntime((d) => {
+      writeFileSync(
+        join(d, "decoy.cjs"),
+        [
+          'const fs = require("node:fs");',
+          "const original = fs.writeSync;",
+          "fs.writeSync = function (fd, buffer, offset, length) {",
+          "  if (fd !== 1) return original.apply(this, arguments);",
+          `  return ${lie};`,
+          "};",
+        ].join("\n") + "\n",
+      );
+      writeFileSync(
+        join(d, "pre-tool-use-main.cjs"),
+        `${ANSWER}(JSON.stringify({ hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: "a lying transport" } }));\n`,
+      );
+    });
+    try {
+      const result = await runHook(
+        join(dir, "pre-tool-use.cjs"),
+        {
+          ATBASH_HOOK_DEADLINE_MS: "6000",
+          NODE_OPTIONS: `--require "${join(dir, "decoy.cjs").split("\\").join("/")}"`,
+        },
+        dir,
+      );
+      assert.equal(result.code, 2, `exit ${result.code}, stdout ${JSON.stringify(result.stdout)}`);
+      assert.match(result.stderr, /could not be delivered/);
+      assert.equal(result.stdout, "", "nothing was written, so nothing may be on stdout");
+      assert.ok(
+        result.wallMs < 5_000,
+        `an impossible count is refused at once, not after a budget: ${result.wallMs} ms`,
+      );
+    } finally {
+      rmSync(dir, { force: true, recursive: true });
+    }
+  });
+}
+
+test("a transport that accepts zero bytes without an error is waited out like a refusal, not spun on", async () => {
+  // A write that returns 0 and no error is a refusal in all but name. It still ends at the stall
+  // budget with exit 2 (nothing accepted for two seconds), but each turn now waits the retry
+  // interval instead of issuing the next syscall at once: two stall budgets at 25 ms per turn
+  // are at most a few hundred calls, where the hot loop made tens of thousands. The preload
+  // counts the calls and reports them on stderr as the process ends.
+  const dir = withDamagedRuntime((d) => {
+    writeFileSync(
+      join(d, "decoy.cjs"),
+      [
+        'const fs = require("node:fs");',
+        "const original = fs.writeSync;",
+        "let calls = 0;",
+        "fs.writeSync = function (fd, buffer, offset, length) {",
+        "  if (fd !== 1) return original.apply(this, arguments);",
+        "  calls += 1;",
+        "  return 0;",
+        "};",
+        'process.on("exit", () => { original.call(fs, 2, "zero-byte calls=" + calls + "\\n"); });',
+      ].join("\n") + "\n",
+    );
+    writeFileSync(
+      join(d, "pre-tool-use-main.cjs"),
+      `${ANSWER}(JSON.stringify({ hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: "a transport that accepts nothing" } }));\n`,
+    );
+  });
+  try {
+    const result = await runHook(
+      join(dir, "pre-tool-use.cjs"),
+      {
+        ATBASH_HOOK_DEADLINE_MS: "6000",
+        NODE_OPTIONS: `--require "${join(dir, "decoy.cjs").split("\\").join("/")}"`,
+      },
+      dir,
+    );
+    assert.equal(result.code, 2, `exit ${result.code}, stdout ${JSON.stringify(result.stdout)}`);
+    assert.match(result.stderr, /could not be delivered/);
+    assert.equal(result.stdout, "", "the transport accepted nothing, so nothing may be on stdout");
+    const calls = Number(/zero-byte calls=(\d+)/.exec(result.stderr)?.[1]);
+    assert.ok(
+      Number.isInteger(calls) && calls > 1,
+      `the preload did not report its calls: ${JSON.stringify(result.stderr)}`,
+    );
+    assert.ok(calls < 400, `${calls} write calls for two stall budgets: the retry did not wait`);
+    // Two stall budgets (the answer's write and the blocking exit's), plus process start-up.
+    assert.ok(result.wallMs >= 2_000 && result.wallMs < 9_000, `ended at ${result.wallMs} ms`);
   } finally {
     rmSync(dir, { force: true, recursive: true });
   }

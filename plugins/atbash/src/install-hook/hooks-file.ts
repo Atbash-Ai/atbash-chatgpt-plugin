@@ -34,6 +34,13 @@ import { basename, dirname, isAbsolute, join, win32 } from "node:path";
 export const HOOK_SCRIPT = "pre-tool-use.cjs";
 export const HOOK_MATCHER = "*";
 export const HOOK_TIMEOUT_SECONDS = 35;
+/** The smallest hook timeout that can outlast the shim's own worst case: its largest deadline
+ *  (30 s) plus the two-second stall budget of the deny write plus a second for the exit. The host
+ *  cuts a hook off when its timeout expires and proceeds with the tool call (measured on Codex
+ *  0.154.0), so an entry under this is registered but not a gate; a missing timeout leaves the
+ *  host's own default, which is not measured, so it does not count either. The installer writes
+ *  HOOK_TIMEOUT_SECONDS. */
+export const HOOK_TIMEOUT_FLOOR_SECONDS = 33;
 export const HOOK_STATUS_MESSAGE = "Checking action with Atbash";
 
 /** A refusal: the target cannot be handled safely, and nothing has been written. */
@@ -304,8 +311,16 @@ function describeJsonError(error: unknown): string {
   const position = /at position \d+(?: \(line \d+ column \d+\))?/.exec(message)?.[0];
   if (position !== undefined) return `syntax error ${position}`;
   if (/end of JSON input/i.test(message)) return "unexpected end of input";
-  const token = /Unexpected token '(.)'/.exec(message)?.[1];
-  return token === undefined ? "syntax error" : `syntax error near token '${token}'`;
+  // The u flag makes (.) one code point, so an astral character is named by its real code point
+  // rather than by a lone surrogate.
+  const token = /Unexpected token '(.)'/u.exec(message)?.[1];
+  if (token === undefined) return "syntax error";
+  // The token is one character of the file itself: a printable ASCII one is quoted, anything
+  // else (a bidi override, an escape, a line separator) is named by its code point so that no raw
+  // character from a hooks file - repository content at project scope - reaches the transcript.
+  return /^[\x20-\x7e]$/.test(token)
+    ? `syntax error near token '${token}'`
+    : `syntax error near U+${(token.codePointAt(0) ?? 0).toString(16).toUpperCase().padStart(4, "0")}`;
 }
 
 /** Parse and validate; anything outside the documented shape is refused, never repaired. */

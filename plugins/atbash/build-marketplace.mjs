@@ -32,14 +32,14 @@ function run(command, args) {
 
 // npm is run through node with npm's own entry script. spawnSync of "npm.cmd" without a shell is
 // refused on current Node (EINVAL, CVE-2024-27980 hardening) and "npm" is not an executable on
-// Windows, so the script location is resolved instead of the wrapper: the npm shipped next to the
-// node binary first, and only then the path npm itself exports when this build runs under
-// `npm run` - an environment variable is the least trusted candidate, and it must name npm-cli.js.
+// Windows, so the script location is resolved instead of the wrapper: the active
+// `npm run` entry first so the repository-pinned npm is used, then the installation next to
+// node for direct invocation. Every candidate must name an existing npm-cli.js.
 export function resolveNpmCli(env = process.env, exists = existsSync) {
   const candidates = [
+    env.npm_execpath,
     join(dirname(process.execPath), "node_modules", "npm", "bin", "npm-cli.js"),
     join(dirname(process.execPath), "..", "lib", "node_modules", "npm", "bin", "npm-cli.js"),
-    env.npm_execpath,
   ].filter(
     (candidate) =>
       typeof candidate === "string" && candidate.length > 0 && basename(candidate) === "npm-cli.js",
@@ -126,7 +126,8 @@ export async function buildMarketplace() {
         tempDir,
         "--json",
       ]);
-      const [metadata] = JSON.parse(packOutput);
+      const packResult = JSON.parse(packOutput);
+      const metadata = Array.isArray(packResult) ? packResult[0] : Object.values(packResult)[0];
       const nativeFile = metadata?.files?.find((file) => file.path.endsWith(".node"));
       if (metadata?.filename === undefined || nativeFile?.path === undefined) {
         throw new Error(`${packageName}@${sdkVersion} did not contain a native .node file.`);
