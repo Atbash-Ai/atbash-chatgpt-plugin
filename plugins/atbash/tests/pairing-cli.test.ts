@@ -29,7 +29,7 @@ function invokePairing(fileOrg?: string, envOrg?: string) {
   writeFileSync(configPath, config, { mode: 0o600 });
   const identity = createECDH("secp256k1");
   identity.generateKeys();
-  const fixtureKey = identity.getPrivateKey("hex");
+  const fixtureKey = identity.getPrivateKey("hex").padStart(64, "0");
   const env = Object.fromEntries(
     Object.entries(process.env).filter(([key]) => !key.toUpperCase().startsWith("ATBASH_")),
   );
