@@ -239,8 +239,8 @@ test("install-hook: the entry names the plugin's real absolute hook path, forwar
   );
   assert.equal(
     isAtbashHook({ commandWindows: `node "${REAL_HOOK_SCRIPT}"` }, IDENTITY),
-    true,
-    "own path in the Windows spelling",
+    WIN32,
+    "the Windows spelling is the host command only on win32",
   );
   const otherCase = { command: `node "${REAL_HOOK_SCRIPT.toUpperCase()}"` };
   assert.equal(isAtbashHook(otherCase, IDENTITY), WIN32, "case folds on Windows only");
