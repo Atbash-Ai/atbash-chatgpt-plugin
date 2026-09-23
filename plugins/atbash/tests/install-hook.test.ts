@@ -69,11 +69,11 @@ import {
 const RUNTIME_DIR = resolve(process.cwd(), "runtime");
 const REAL_HOOK_SCRIPT = realpathSync(join(RUNTIME_DIR, "pre-tool-use.cjs"));
 const WIN32 = process.platform === "win32";
-// What the registered command carries: the realpath as it is, forward slashes on Windows only.
-const COMMAND_PATH = WIN32 ? REAL_HOOK_SCRIPT.replaceAll("\\", "/") : REAL_HOOK_SCRIPT;
+// What the registered command carries: native paths on every platform.
+const COMMAND_PATH = REAL_HOOK_SCRIPT;
 // The interpreter the installer embeds: the node running these tests, resolved like the hook.
 const NODE_PATH = realpathSync(process.execPath);
-const NODE_COMMAND = WIN32 ? NODE_PATH.replaceAll("\\", "/") : NODE_PATH;
+const NODE_COMMAND = NODE_PATH;
 // PowerShell's call operator on Windows (Codex runs hook commands through PowerShell there).
 const CALL = WIN32 ? "& " : "";
 const OWN_COMMAND = `${CALL}"${NODE_COMMAND}" "${COMMAND_PATH}"`;
@@ -107,8 +107,111 @@ const FOREIGN_GROUP: GroupShape = {
 };
 
 function tempHome(): string {
-  return mkdtempSync(join(tmpdir(), "atbash-install-hook-"));
+  const root = WIN32 && process.env.RUNNER_TEMP ? process.env.RUNNER_TEMP : tmpdir();
+  assert.ok(isAbsolute(root), "test temporary root must be absolute");
+  return mkdtempSync(join(root, "atbash-install-hook-"));
 }
+
+test("install-hook: PowerShell startup diagnostics decode without reflecting arbitrary stderr", async () => {
+  const probeStartupDiagnostic = Reflect.get(
+    await import("../src/install-hook/hooks-file.js"),
+    "probeStartupDiagnostic",
+  ) as (stderr: Buffer) => string;
+  assert.equal(
+    probeStartupDiagnostic(
+      Buffer.from("Starting the CLR failed with HRESULT 80004005.\r\n", "utf16le"),
+    ),
+    "PowerShell CLR startup failed (HRESULT 80004005)",
+  );
+  assert.equal(
+    probeStartupDiagnostic(Buffer.from("Starting the CLR failed with HRESULT 80004005.\n", "utf8")),
+    "PowerShell CLR startup failed (HRESULT 80004005)",
+  );
+  assert.equal(
+    probeStartupDiagnostic(Buffer.from("secret-token=deadbeef\u202E\r\n", "utf16le")),
+    "",
+  );
+});
+
+test("install-hook: host-shell refusal never reflects untrusted stderr or registered command", () => {
+  const home = tempHome();
+  try {
+    const commandToken = "tok_REGISTERED_COMMAND_SECRET_394";
+    const stderrToken = "tok_CHILD_STDERR_SECRET_278";
+    const runtimeDir = join(home, commandToken);
+    const marker = join(home, "hostile-hook-ran");
+    mkdirSync(runtimeDir);
+    writeFileSync(
+      join(runtimeDir, "pre-tool-use.cjs"),
+      `require("node:fs").writeFileSync(${JSON.stringify(marker)}, "ran"); ` +
+        `process.stderr.write(${JSON.stringify(stderrToken)}); process.exit(17);\n`,
+    );
+
+    // Spell Windows paths natively even against the old implementation: the negative test
+    // must fail for disclosure, rather than for a shell path that never started the hook.
+    const hostileScript = realpathSync(join(runtimeDir, "pre-tool-use.cjs"));
+    const entry = buildAtbashEntry(hostileScript, process.platform, NODE_PATH);
+    const nativeCommand = `${CALL}"${NODE_PATH}" "${hostileScript}"`;
+    const hostileEntry = {
+      ...entry,
+      hooks: [
+        {
+          ...entry.hooks[0]!,
+          command: nativeCommand,
+          ...(WIN32 ? { commandWindows: nativeCommand } : {}),
+        },
+      ],
+    };
+    let probeMessage = "";
+    assert.throws(
+      () => probeRegisteredCommand(hostileEntry, process.platform),
+      (error: unknown) => {
+        if (!(error instanceof HooksFileRefusal)) return false;
+        probeMessage = error.message;
+        return true;
+      },
+    );
+    assert.equal(existsSync(marker), true, "the real host shell must execute the hostile hook");
+    assert.equal(probeMessage.includes(stderrToken), false, "probe reflected child stderr");
+    assert.equal(probeMessage.includes(commandToken), false, "probe reflected the command");
+    rmSync(marker);
+
+    const refused = runCli([], context(home, { runtimeDir }));
+    assert.equal(
+      existsSync(marker),
+      true,
+      `the real host shell must execute the hostile hook: ${refused.stderr}`,
+    );
+    assert.equal(refused.code, EXIT_REFUSED);
+    assert.match(
+      refused.stderr,
+      WIN32
+        ? /registered command could not be executed by the host shell: exit 1/
+        : /registered command could not be executed by the host shell: exit 17/,
+    );
+    assert.equal(refused.stderr.includes(stderrToken), false, "child stderr leaked");
+    assert.equal(refused.stderr.includes(commandToken), false, "registered command leaked");
+    assert.equal(existsSync(join(home, ".codex")), false, "refusal wrote a hooks file");
+
+    // The marketplace ships its own bundled installer, so prove the same refusal there.
+    const bundledInstaller = join(runtimeDir, "install-hook.cjs");
+    copyFileSync(join(RUNTIME_DIR, "install-hook.cjs"), bundledInstaller);
+    rmSync(marker);
+    const bundled = spawnSync(process.execPath, [bundledInstaller, "--dir", home], {
+      cwd: home,
+      encoding: "utf8",
+      timeout: 30_000,
+      env: { ...process.env, HOME: home, USERPROFILE: home, CODEX_HOME: home },
+    });
+    assert.equal(existsSync(marker), true, "the bundled installer must execute the hostile hook");
+    assert.equal(bundled.status, EXIT_REFUSED);
+    assert.equal(bundled.stderr.includes(stderrToken), false, "bundled child stderr leaked");
+    assert.equal(bundled.stderr.includes(commandToken), false, "bundled command leaked");
+    assert.equal(existsSync(join(home, "hooks.json")), false, "bundled refusal wrote hooks.json");
+  } finally {
+    rmSync(home, { force: true, recursive: true });
+  }
+});
 
 function options(overrides: Partial<InstallHookOptions> = {}): InstallHookOptions {
   return { scope: "user", dryRun: false, uninstall: false, help: false, ...overrides };
@@ -168,7 +271,7 @@ function runCli(
   return { code, stdout: stdout.join(""), stderr: stderr.join("") };
 }
 
-test("install-hook: the entry names the plugin's real absolute hook path, forward slashes and a Windows variant on win32 only", () => {
+test("install-hook: the entry names the plugin's real absolute hook path and a Windows variant on win32 only", () => {
   assert.ok(resolve(REAL_HOOK_SCRIPT) === REAL_HOOK_SCRIPT, "realpath must be absolute");
   assert.match(REAL_HOOK_SCRIPT, /[\\/]runtime[\\/]pre-tool-use\.cjs$/);
 
@@ -186,8 +289,7 @@ test("install-hook: the entry names the plugin's real absolute hook path, forwar
     ],
   });
 
-  // Windows: both host fields use the forward-slash spelling proven by the
-  // elevated runner's real PowerShell probe.
+  // Windows: both host fields use native paths that PowerShell -Command can run.
   const windows = buildAtbashEntry(
     "C:\\Users\\dev\\New folder (3)\\runtime\\pre-tool-use.cjs",
     "win32",
@@ -196,9 +298,9 @@ test("install-hook: the entry names the plugin's real absolute hook path, forwar
   assert.deepEqual(windows.hooks[0], {
     type: "command",
     command:
-      '& "C:/Program Files/nodejs/node.exe" "C:/Users/dev/New folder (3)/runtime/pre-tool-use.cjs"',
+      '& "C:\\Program Files\\nodejs\\node.exe" "C:\\Users\\dev\\New folder (3)\\runtime\\pre-tool-use.cjs"',
     commandWindows:
-      '& "C:/Program Files/nodejs/node.exe" "C:/Users/dev/New folder (3)/runtime/pre-tool-use.cjs"',
+      '& "C:\\Program Files\\nodejs\\node.exe" "C:\\Users\\dev\\New folder (3)\\runtime\\pre-tool-use.cjs"',
     timeout: HOOK_TIMEOUT_SECONDS,
     statusMessage: HOOK_STATUS_MESSAGE,
   });
@@ -277,11 +379,15 @@ test("install-hook: the entry names the plugin's real absolute hook path, forwar
   assert.equal(commandScriptPath('"/usr/bin/node" /a/c.cjs'), undefined);
 });
 
-test("install-hook: both registered host fields answer with the probe's restricted environment", () => {
+test("install-hook: both registered host fields answer with the probe's restricted environment", (t) => {
+  const sandbox = tempHome();
+  t.after(() => rmSync(sandbox, { force: true, recursive: true }));
   const base: Record<string, string> = {
     PATH: "",
-    HOME: "",
-    USERPROFILE: "",
+    HOME: sandbox,
+    USERPROFILE: sandbox,
+    APPDATA: sandbox,
+    LOCALAPPDATA: sandbox,
     ATBASH_CODEX_TIMEOUT_MS: "invalid",
     ATBASH_HOOK_DEADLINE_MS: "",
   };
@@ -292,23 +398,23 @@ test("install-hook: both registered host fields answer with the probe's restrict
   if (WIN32) base.PATHEXT = process.env.PATHEXT ?? ".COM;.EXE;.BAT;.CMD";
   const commands: readonly (readonly [string, string])[] = WIN32
     ? [
-        ["forward", OWN_COMMAND],
+        ["command", OWN_COMMAND],
         [
           "windows",
           buildAtbashEntry(REAL_HOOK_SCRIPT, process.platform, NODE_PATH).hooks[0]!.commandWindows!,
         ],
       ]
-    : [["forward", OWN_COMMAND]];
+    : [["command", OWN_COMMAND]];
   const results = commands.map(([variant, command]) => {
     const result = spawnSync(
       WIN32 ? windowsPowerShellPath(process.env) : "/bin/sh",
       WIN32 ? ["-NoProfile", "-NonInteractive", "-Command", command] : ["-c", command],
       {
-        cwd: tmpdir(),
+        cwd: sandbox,
         env: base,
         input: JSON.stringify(PROBE_PAYLOAD),
         encoding: "utf8",
-        timeout: 5_000,
+        timeout: 15_000,
         windowsHide: true,
       },
     );
@@ -1561,7 +1667,7 @@ test("install-hook: the built installer (dist and the committed runtime) registe
     const home = tempHome();
     try {
       const sibling = realpathSync(join(resolve(entry, ".."), "pre-tool-use.cjs"));
-      const registered = WIN32 ? sibling.replaceAll("\\", "/") : sibling;
+      const registered = sibling;
       const run = (args: string[]) =>
         spawnSync(process.execPath, [entry, ...args], {
           cwd: process.cwd(),
