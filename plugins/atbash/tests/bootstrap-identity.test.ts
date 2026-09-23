@@ -324,6 +324,21 @@ interface ChildResult {
   elapsedMs: number;
 }
 
+function safeChildDiagnostics(result: ChildResult): string {
+  // CI needs to distinguish a cold helper timeout from a later bootstrap
+  // boundary without printing paths, process output, keys or exception text.
+  return JSON.stringify({
+    elapsedMs: result.elapsedMs,
+    helperCount: result.helperCount,
+    helpersClosed: result.helpersClosed,
+    helperRequests: result.helperRequests,
+    generated: result.generated,
+    secretWrites: result.secretWrites,
+    publications: result.publications,
+    boundaries: result.boundaries,
+  });
+}
+
 interface CrashResult {
   boundary: string;
   generated: number;
@@ -567,7 +582,7 @@ if (process.platform === "win32") {
     const trustedExecutable = realpathSync.native(
       String.raw`\\?\GLOBALROOT\SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe`,
     );
-    assert.equal(result.failed, false);
+    assert.equal(result.failed, false, safeChildDiagnostics(result));
     assert.equal(result.result?.state, "created");
     assert.equal(result.generated, 1);
     assert.equal(result.secretWrites, 1);
@@ -674,7 +689,11 @@ if (process.platform === "win32") {
     ]);
     assert.equal(waiting.length, 2);
     for (const result of results)
-      assert.deepEqual(result.boundaries, ["claim-ready", "claim-released"]);
+      assert.deepEqual(
+        result.boundaries,
+        ["claim-ready", "claim-released"],
+        safeChildDiagnostics(result),
+      );
     assert.equal(results.filter((result) => !result.failed).length, 1);
     assert.equal(
       results.reduce((sum, result) => sum + result.generated, 0),
@@ -696,7 +715,7 @@ if (process.platform === "win32") {
     const home = await createFixture();
     const result = await run(home, "config-drift-before-generation");
     refused(result);
-    assert.deepEqual(result.boundaries, ["config-inserted"]);
+    assert.deepEqual(result.boundaries, ["config-inserted"], safeChildDiagnostics(result));
     const directory = join(home, ".config", "atbash");
     assert.equal(
       await readFile(join(directory, "config.json"), "utf8"),
