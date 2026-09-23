@@ -276,7 +276,7 @@ test("install-hook: the entry names the plugin's real absolute hook path, forwar
   assert.equal(commandScriptPath('"/usr/bin/node" /a/c.cjs'), undefined);
 });
 
-test("install-hook: the host shell starts with the probe's restricted environment", () => {
+test("install-hook: the real hook starts with the probe's restricted environment", () => {
   const base: Record<string, string> = {
     PATH: "",
     HOME: "",
@@ -306,10 +306,15 @@ test("install-hook: the host shell starts with the probe's restricted environmen
     }
     const result = spawnSync(
       WIN32 ? windowsPowerShellPath(process.env) : "/bin/sh",
-      WIN32
-        ? ["-NoProfile", "-NonInteractive", "-Command", '[Console]::Out.Write("healthy")']
-        : ["-c", "printf healthy"],
-      { cwd: tmpdir(), env, encoding: "utf8", timeout: 5_000, windowsHide: true },
+      WIN32 ? ["-NoProfile", "-NonInteractive", "-Command", OWN_COMMAND] : ["-c", OWN_COMMAND],
+      {
+        cwd: tmpdir(),
+        env,
+        input: "{}",
+        encoding: "utf8",
+        timeout: 5_000,
+        windowsHide: true,
+      },
     );
     const errorCode = (result.error as NodeJS.ErrnoException | undefined)?.code;
     return {
@@ -317,11 +322,11 @@ test("install-hook: the host shell starts with the probe's restricted environmen
       errorCode: errorCode && /^[A-Z0-9_]{1,40}$/.test(errorCode) ? errorCode : null,
       stdoutBytes: Buffer.byteLength(result.stdout ?? ""),
       stderrBytes: Buffer.byteLength(result.stderr ?? ""),
-      healthy: result.stdout === "healthy",
+      answered: (result.stdout ?? "").trimStart().startsWith("{"),
     };
   });
   assert.equal(results[0]?.status, 0, JSON.stringify(results));
-  assert.equal(results[0]?.healthy, true, JSON.stringify(results));
+  assert.equal(results[0]?.answered, true, JSON.stringify(results));
 });
 
 test("install-hook: a hook path containing shell metacharacters or a backslash on POSIX is refused, nothing written", () => {
