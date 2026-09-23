@@ -299,35 +299,49 @@ test("install-hook: the real hook starts with the probe's restricted environment
         ["APPDATA", "LOCALAPPDATA", "PSModulePath"],
       ]
     : [[]];
-  const results = additions.map((names) => {
+  const commands: readonly (readonly [string, string])[] = WIN32
+    ? [
+        ["forward", OWN_COMMAND],
+        [
+          "windows",
+          buildAtbashEntry(REAL_HOOK_SCRIPT, process.platform, NODE_PATH).hooks[0]!.commandWindows!,
+        ],
+      ]
+    : [["forward", OWN_COMMAND]];
+  const results = additions.flatMap((names) => {
     const env = { ...base };
     for (const name of names) {
       const value = process.env[name];
       if (value !== undefined) env[name] = value;
     }
-    const result = spawnSync(
-      WIN32 ? windowsPowerShellPath(process.env) : "/bin/sh",
-      WIN32 ? ["-NoProfile", "-NonInteractive", "-Command", OWN_COMMAND] : ["-c", OWN_COMMAND],
-      {
-        cwd: tmpdir(),
-        env,
-        input: JSON.stringify(PROBE_PAYLOAD),
-        encoding: "utf8",
-        timeout: 5_000,
-        windowsHide: true,
-      },
-    );
-    const errorCode = (result.error as NodeJS.ErrnoException | undefined)?.code;
-    return {
-      status: result.status,
-      errorCode: errorCode && /^[A-Z0-9_]{1,40}$/.test(errorCode) ? errorCode : null,
-      stdoutBytes: Buffer.byteLength(result.stdout ?? ""),
-      stderrBytes: Buffer.byteLength(result.stderr ?? ""),
-      answered: (result.stdout ?? "").trimStart().startsWith("{"),
-    };
+    return commands.map(([variant, command]) => {
+      const result = spawnSync(
+        WIN32 ? windowsPowerShellPath(process.env) : "/bin/sh",
+        WIN32 ? ["-NoProfile", "-NonInteractive", "-Command", command] : ["-c", command],
+        {
+          cwd: tmpdir(),
+          env,
+          input: JSON.stringify(PROBE_PAYLOAD),
+          encoding: "utf8",
+          timeout: 5_000,
+          windowsHide: true,
+        },
+      );
+      const errorCode = (result.error as NodeJS.ErrnoException | undefined)?.code;
+      return {
+        variant,
+        additions: names,
+        status: result.status,
+        errorCode: errorCode && /^[A-Z0-9_]{1,40}$/.test(errorCode) ? errorCode : null,
+        stdoutBytes: Buffer.byteLength(result.stdout ?? ""),
+        stderrBytes: Buffer.byteLength(result.stderr ?? ""),
+        answered: (result.stdout ?? "").trimStart().startsWith("{"),
+      };
+    });
   });
   assert.equal(results[0]?.status, 0, JSON.stringify(results));
   assert.equal(results[0]?.answered, true, JSON.stringify(results));
+  if (WIN32) assert.equal(results[1]?.status, 0, JSON.stringify(results));
 });
 
 test("install-hook: a hook path containing shell metacharacters or a backslash on POSIX is refused, nothing written", () => {
