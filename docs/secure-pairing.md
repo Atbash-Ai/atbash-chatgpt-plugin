@@ -23,11 +23,11 @@ its command-line URL; production token secrecy needs a browser handoff without
 a bearer argument. An existing local identity, organization and organization policy are
 required; cold account/configuration setup is not automated yet. Optional
 `--policy`, `--name` and `--purpose` arguments contain public metadata only.
-The helper resolves the organization with the same SDK configuration precedence
-as the status command: `ATBASH_ORG_NAME` overrides the local configuration.
-Surrounding whitespace is trimmed; a missing or blank organization is rejected
-before chain queries, callback-server startup or browser launch. SDK 0.7.1
-requires the resolved organization to be passed explicitly to `fromConfig`.
+The disabled CLI still uses the SDK configuration path, but its current CLI
+tests establish only the owner gate across configured, overridden, missing,
+and blank organization inputs. They do not establish configuration precedence
+or invalid-organization behavior for a future enabled pairing flow; those
+cases must be restored with the integration tests before activation.
 The command is implemented locally, **not released or activated**:
 
 - `pairing-intent.ts` signs a fixed, domain-separated tuple with the local

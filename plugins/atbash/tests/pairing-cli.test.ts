@@ -97,7 +97,7 @@ for (const scenario of [
   { name: "blank configured organization", file: "   ", env: undefined },
   { name: "blank environment override", file: "file-org", env: "   " },
 ]) {
-  test(`packaged pairing CLI refuses ${scenario.name} before queries`, () => {
+  test(`packaged pairing CLI owner gate holds with ${scenario.name}`, () => {
     const { result, trace, fixtureRoot } = invokePairing(scenario.file, scenario.env);
     assert.match(result.stderr, /Owner-authenticated policy handoff is not available/);
     assert.deepEqual(trace.queries, []);
