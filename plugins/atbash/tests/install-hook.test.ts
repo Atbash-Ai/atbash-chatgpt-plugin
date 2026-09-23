@@ -45,6 +45,7 @@ import {
   HOOK_MATCHER,
   HOOK_STATUS_MESSAGE,
   HOOK_TIMEOUT_SECONDS,
+  PROBE_PAYLOAD,
   HooksFileRefusal,
   buildAtbashEntry,
   commandScriptPath,
@@ -310,7 +311,7 @@ test("install-hook: the real hook starts with the probe's restricted environment
       {
         cwd: tmpdir(),
         env,
-        input: "{}",
+        input: JSON.stringify(PROBE_PAYLOAD),
         encoding: "utf8",
         timeout: 5_000,
         windowsHide: true,
