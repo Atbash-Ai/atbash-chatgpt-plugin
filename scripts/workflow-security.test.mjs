@@ -33,3 +33,26 @@ test("unprotected release tags cannot upload an unsigned plugin package", () => 
     "release packaging must remain local until reviewed tag protection and provenance exist",
   );
 });
+
+test("release packaging verifies identity, every native target, and a checksum", () => {
+  const release = workflow("release.yml");
+  assert.match(release, /artifact\.name !== plugin\.name/);
+  assert.match(release, /artifact\.version !== root\.version/);
+  for (const target of ["darwin-arm64", "linux-arm64", "linux-x64", "win32-x64"]) {
+    assert.ok(
+      release.includes(`runtime/native/${target}/atbash.node`),
+      `${target} native binding must be verified`,
+    );
+  }
+  for (const required of [
+    "runtime/manifest.json",
+    "runtime/pre-tool-use.cjs",
+    "skills/atbash-setup/SKILL.md",
+  ]) {
+    assert.ok(
+      release.includes(`"${required}"`),
+      `${required} must be present in the package manifest check`,
+    );
+  }
+  assert.match(release, /sha256sum "\$package_file"/);
+});

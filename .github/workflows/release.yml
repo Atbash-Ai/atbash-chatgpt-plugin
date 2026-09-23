@@ -96,5 +96,43 @@ jobs:
       - name: Verify committed universal marketplace runtime
         run: npm run build:marketplace && git diff --exit-code -- plugins/atbash/runtime
 
-      - name: Package plugin
-        run: npm pack --workspace @atbash/codex-plugin
+      - name: Package and verify the exact plugin artifact
+        shell: bash
+        run: |
+          npm pack --workspace @atbash/codex-plugin --ignore-scripts --json > pack-result.json
+          package_file="$(node --input-type=module <<'NODE'
+          import { readFileSync } from "node:fs";
+          const readJson = (path) => JSON.parse(readFileSync(path, "utf8"));
+          const root = readJson("package.json");
+          const plugin = readJson("plugins/atbash/package.json");
+          const result = readJson("pack-result.json");
+          if (!Array.isArray(result) || result.length !== 1) throw new Error("Expected exactly one packed artifact");
+          const [artifact] = result;
+          if (artifact.name !== plugin.name || artifact.version !== root.version || artifact.version !== plugin.version) {
+            throw new Error("Packed artifact identity does not match the release manifests");
+          }
+          const paths = new Set((artifact.files ?? []).map((file) => file.path));
+          for (const required of [
+            ".codex-plugin/plugin.json",
+            "runtime/manifest.json",
+            "runtime/install-hook.cjs",
+            "runtime/pre-tool-use.cjs",
+            "runtime/pre-tool-use-main.cjs",
+            "runtime/status.cjs",
+            "runtime/native/darwin-arm64/atbash.node",
+            "runtime/native/linux-arm64/atbash.node",
+            "runtime/native/linux-x64/atbash.node",
+            "runtime/native/win32-x64/atbash.node",
+            "skills/atbash-setup/SKILL.md",
+            "skills/atbash-setup/scripts/prepare-config.mjs",
+          ]) {
+            if (!paths.has(required)) throw new Error(`Packed artifact is missing ${required}`);
+          }
+          if (typeof artifact.filename !== "string" || artifact.filename.length === 0) {
+            throw new Error("Packed artifact filename is missing");
+          }
+          process.stdout.write(artifact.filename);
+          NODE
+          )"
+          test -f "$package_file"
+          sha256sum "$package_file" > "$package_file.sha256"
