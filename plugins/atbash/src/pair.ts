@@ -1,59 +1,11 @@
 #!/usr/bin/env node
 import { Atbash } from "@atbash/sdk";
-import { spawn } from "node:child_process";
-import { access } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { parseArgs } from "node:util";
 import { beginPairing, PairingCapacityError } from "./atbash/pairing-session.js";
 import { resolveOrgName } from "./atbash/guard.js";
-
-async function openDashboard(url: string) {
-  // Launch a concrete browser executable, never a shell/file association handler
-  // (which can produce Windows "Pick an app" dialogs). The token is not logged.
-  let executable = "google-chrome";
-  let args = [url];
-  if (process.platform === "win32") {
-    const candidates = [
-      join(
-        process.env.ProgramFiles ?? "C:\\Program Files",
-        "Google",
-        "Chrome",
-        "Application",
-        "chrome.exe",
-      ),
-      join(
-        process.env.LOCALAPPDATA ?? join(homedir(), "AppData", "Local"),
-        "Google",
-        "Chrome",
-        "Application",
-        "chrome.exe",
-      ),
-    ];
-    executable = "";
-    for (const candidate of candidates) {
-      try {
-        await access(candidate);
-        executable = candidate;
-        break;
-      } catch {
-        /* Try next conventional install. */
-      }
-    }
-    if (!executable) throw new Error("Google Chrome is required for this pairing preview.");
-  } else if (process.platform === "darwin") {
-    executable = "/usr/bin/open";
-    args = ["-a", "Google Chrome", url];
-  }
-  await new Promise<void>((resolve, reject) => {
-    const child = spawn(executable, args, { shell: false, windowsHide: true, stdio: "ignore" });
-    child.once("error", () => reject(new Error("Could not open the Dashboard browser.")));
-    child.once("spawn", () => {
-      child.unref();
-      resolve();
-    });
-  });
-}
+import { openDashboardBrowser } from "./atbash/dashboard-browser.js";
 
 async function main() {
   const { values } = parseArgs({
@@ -92,7 +44,7 @@ async function main() {
   process.once("SIGINT", stop);
   process.once("SIGTERM", stop);
   try {
-    await openDashboard(pairing.browserUrl);
+    await openDashboardBrowser(pairing.browserUrl);
     process.stdout.write(
       "Review enrollment in the Dashboard. Keep this helper running; your key stays local.\n",
     );
