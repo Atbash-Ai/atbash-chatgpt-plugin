@@ -13,6 +13,7 @@ import {
   writeFile,
 } from "node:fs/promises";
 import { syncBuiltinESMExports } from "node:module";
+import { userInfo } from "node:os";
 import { dirname, join } from "node:path";
 import test from "node:test";
 import {
@@ -46,6 +47,9 @@ if (process.platform === "win32") {
       COR_PROFILER: process.env.COR_PROFILER,
       COR_PROFILER_PATH: process.env.COR_PROFILER_PATH,
       PSModulePath: process.env.PSModulePath,
+      USERPROFILE: process.env.USERPROFILE,
+      TEMP: process.env.TEMP,
+      TMP: process.env.TMP,
     };
     const originalSpawnSync = childProcess.spawnSync;
     let launchedEnvironment: NodeJS.ProcessEnv | undefined;
@@ -60,6 +64,9 @@ if (process.platform === "win32") {
       process.env.COR_PROFILER = "{9F0F2BA3-E62E-4CA0-AD8E-33D79367C339}";
       process.env.COR_PROFILER_PATH = join(fixture, "controlled-profiler.dll");
       process.env.PSModulePath = hostileModules;
+      process.env.USERPROFILE = fixture;
+      process.env.TEMP = fixture;
+      process.env.TMP = fixture;
       const directory = join(fixture, "private");
       preparePrivateWindowsDirectory(directory);
       verifyPrivateWindowsDirectory(directory);
@@ -76,13 +83,22 @@ if (process.platform === "win32") {
       String.raw`\\?\GLOBALROOT\SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe`,
     );
     assert.deepEqual(Object.keys(launchedEnvironment ?? {}).sort(), [
+      "APPDATA",
+      "HOMEDRIVE",
+      "HOMEPATH",
       "LOCALAPPDATA",
       "PSModulePath",
       "SystemRoot",
+      "TEMP",
+      "TMP",
+      "USERNAME",
+      "USERPROFILE",
       "windir",
     ]);
     assert.equal(launchedEnvironment?.PSModulePath, join(dirname(trustedExecutable), "Modules"));
     assert.equal(launchedEnvironment?.LOCALAPPDATA, realpathSync.native(process.env.LOCALAPPDATA!));
+    assert.equal(launchedEnvironment?.USERPROFILE, realpathSync.native(userInfo().homedir));
+    assert.notEqual(launchedEnvironment?.TEMP, fixture);
     assert.equal(launchedEnvironment?.COR_ENABLE_PROFILING, undefined);
     assert.equal(launchedEnvironment?.COR_PROFILER_PATH, undefined);
   });

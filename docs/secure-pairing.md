@@ -7,7 +7,12 @@ policy. It must never require pasting a private key into the browser.
 The packaged preview command is `node plugins/atbash/runtime/pair.cjs` from the
 repository, or `node runtime/pair.cjs` from the installed plugin directory.
 Development builds also provide `dist/pair.cjs`. It uses the existing SDK configuration and opens Chrome
-directly. An existing local identity, organization and organization policy are
+directly from a fixed system installation after canonical path and ownership
+checks. It does not search inherited `PATH`, `ProgramFiles`, or `LOCALAPPDATA`,
+and the browser child receives only a small OS-derived environment. A missing
+or untrusted installation fails closed. The browser still receives the
+short-lived capability in its command-line URL; production token secrecy needs
+a browser handoff without a bearer argument. An existing local identity, organization and organization policy are
 required; cold account/configuration setup is not automated yet. Optional
 `--policy`, `--name` and `--purpose` arguments contain public metadata only.
 The helper resolves the organization with the same SDK configuration precedence

@@ -32,7 +32,8 @@ export function trustedWindowsPowerShell(): {
     if (!candidate || !/^[A-Za-z]:\\/.test(candidate) || !/\\AppData\\Local\\?$/i.test(candidate))
       throw new Error(FAILURE);
     const localAppData = realpathSync.native(candidate);
-    const accountProfile = realpathSync.native(userInfo().homedir);
+    const account = userInfo();
+    const accountProfile = realpathSync.native(account.homedir);
     if (
       !/^[A-Za-z]:\\/.test(localAppData) ||
       !/\\AppData\\Local$/i.test(localAppData) ||
@@ -42,16 +43,29 @@ export function trustedWindowsPowerShell(): {
       !statSync(localAppData).isDirectory()
     )
       throw new Error(FAILURE);
+    const roaming = win32.join(accountProfile, "AppData", "Roaming");
+    const temp = win32.join(localAppData, "Temp");
+    if (!statSync(roaming).isDirectory() || !statSync(temp).isDirectory()) throw new Error(FAILURE);
+    const homeDrive = win32.parse(accountProfile).root.slice(0, 2);
+    const homePath = accountProfile.slice(homeDrive.length);
     return {
       executable,
       // PowerShell hosts the CLR. Inheriting COR_*, CORECLR_* or PSModulePath
       // would let caller-controlled environment state load code into the ACL
-      // verifier. Its encoded command needs only the trusted Windows root.
+      // verifier. Profile and temp locations below are derived from the OS
+      // account, never from inherited environment variables.
       env: {
         SystemRoot: systemRoot,
         windir: systemRoot,
         PSModulePath: modulePath,
         LOCALAPPDATA: localAppData,
+        APPDATA: roaming,
+        TEMP: temp,
+        TMP: temp,
+        USERPROFILE: accountProfile,
+        HOMEDRIVE: homeDrive,
+        HOMEPATH: homePath,
+        USERNAME: account.username,
       },
     };
   } catch {
