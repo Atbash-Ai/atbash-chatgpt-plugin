@@ -36,6 +36,10 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Verify Windows ACL helper startup
+        if: runner.os == 'Windows'
+        run: npm run build --workspace @atbash/codex-plugin && npx tsc -p plugins/atbash/tsconfig.test.json && node --test plugins/atbash/dist-tests/tests/windows-module-path.test.js
+
       - name: Verify
         run: npm run verify
 

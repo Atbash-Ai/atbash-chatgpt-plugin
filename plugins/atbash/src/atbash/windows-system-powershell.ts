@@ -23,8 +23,12 @@ export function trustedWindowsPowerShell(): {
       throw new Error(FAILURE);
     const systemRoot = dirname(dirname(dirname(dirname(executable))));
     if (!/^[A-Za-z]:\\/.test(systemRoot)) throw new Error(FAILURE);
-    const modulePath = `${dirname(executable)}\\Modules`;
-    if (!statSync(modulePath).isDirectory()) throw new Error(FAILURE);
+    const systemModules = `${dirname(executable)}\\Modules`;
+    if (!statSync(systemModules).isDirectory()) throw new Error(FAILURE);
+    // Windows PowerShell prepends AllUsers modules when PSModulePath exactly
+    // equals its system Modules path. The equivalent trailing \\. prevents that
+    // rewrite while keeping command discovery within the trusted directory.
+    const modulePath = `${systemModules}\\.`;
     // Windows PowerShell reads its module-analysis cache from LOCALAPPDATA.
     // Keep that one cache location only when it is the existing canonical
     // local-drive AppData directory, never an inherited arbitrary path.

@@ -35,6 +35,9 @@ the child receives the resolved Windows root, its system module directory,
 and profile, AppData and temporary paths derived from the OS account. These
 support PowerShell's module analysis cache and first-use startup. Caller-supplied CLR profiler settings and module search paths
 are never inherited. A redirected cache directory is rejected before launch.
+The system module path retains a trailing `\\.` so Windows PowerShell does not
+prepend machine-wide modules during startup. CI runs a real helper startup and
+ACL check before the full Windows suite; a timeout leaves the job red.
 The Windows fixture places a real
 executable under a poisoned `SystemRoot` and requires bootstrap to use the
 trusted helper before generating an identity.

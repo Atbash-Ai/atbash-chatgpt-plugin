@@ -95,7 +95,10 @@ if (process.platform === "win32") {
       "USERPROFILE",
       "windir",
     ]);
-    assert.equal(launchedEnvironment?.PSModulePath, join(dirname(trustedExecutable), "Modules"));
+    assert.equal(
+      launchedEnvironment?.PSModulePath,
+      `${join(dirname(trustedExecutable), "Modules")}\\.`,
+    );
     assert.equal(launchedEnvironment?.LOCALAPPDATA, realpathSync.native(process.env.LOCALAPPDATA!));
     assert.equal(launchedEnvironment?.USERPROFILE, realpathSync.native(userInfo().homedir));
     assert.notEqual(launchedEnvironment?.TEMP, fixture);
