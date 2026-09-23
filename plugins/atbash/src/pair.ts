@@ -3,7 +3,7 @@ import { Atbash } from "@atbash/sdk";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { parseArgs } from "node:util";
-import { beginPairing, PairingCapacityError } from "./atbash/pairing-session.js";
+import { beginPairing, PairingUnavailableError } from "./atbash/pairing-session.js";
 import { resolveOrgName } from "./atbash/guard.js";
 import { openDashboardBrowser } from "./atbash/dashboard-browser.js";
 
@@ -74,7 +74,7 @@ async function main() {
 void main().catch((error: unknown) => {
   // SDK errors may contain configuration details. Keep diagnostics bounded.
   process.stderr.write(
-    error instanceof PairingCapacityError
+    error instanceof PairingUnavailableError
       ? `${error.message}\n`
       : "Atbash pairing could not start or finish. Check local configuration, the installed runtime network, organization policy, and whether another pairing process is running.\n",
   );

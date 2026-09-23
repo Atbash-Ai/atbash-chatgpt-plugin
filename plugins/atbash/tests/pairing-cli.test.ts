@@ -60,40 +60,33 @@ function invokePairing(fileOrg?: string, envOrg?: string) {
     "No fixture credential output",
   );
   assert.equal(result.error, undefined, "CLI must finish without a spawn error or timeout");
-  assert.equal(result.status, 1, "Controlled capacity/config refusal must exit 1");
+  assert.equal(result.status, 1, "Missing owner handoff must exit 1");
   assert.equal(readFileSync(configPath, "utf8"), config, "Existing configuration is preserved");
   const trace = JSON.parse(readFileSync(join(fixtureRoot, "trace.json"), "utf8")) as Trace;
   assert.equal(trace.blockedAccess, 0, "No real Atbash storage access");
   assert.equal(trace.network, 0, "No unmatched or actual network access");
   assert.equal(trace.browser, 0, "No browser invocation");
-  assert.equal(trace.server, 0, "No callback server before capacity/config approval");
+  assert.equal(trace.server, 0, "No callback server before owner authorization");
   return { result, trace, fixtureRoot, publicKey: identity.getPublicKey("hex", "compressed") };
 }
 
 for (const scenario of [
   {
-    name: "file organization is resolved and trimmed",
+    name: "configured organization cannot bypass the owner gate",
     file: "  file-org  ",
     env: undefined,
-    expected: "file-org",
   },
   {
-    name: "explicit environment organization takes precedence",
+    name: "environment organization cannot bypass the owner gate",
     file: "file-org",
     env: "  env-org  ",
-    expected: "env-org",
   },
 ]) {
   test(`packaged pairing CLI: ${scenario.name}`, () => {
-    const { result, trace, publicKey } = invokePairing(scenario.file, scenario.env);
-    assert.match(result.stderr, /This organization has no available active-agent slot/);
-    assert.deepEqual(
-      trace.queries.map((q) => q.name).sort(),
-      ["get_agent_by_pubkey", "get_org_account_id", "get_org_agent_capacity"].sort(),
-    );
-    for (const name of ["get_org_account_id", "get_org_agent_capacity"])
-      assert.equal(trace.queries.find((q) => q.name === name)?.organization, scenario.expected);
-    assert.equal(trace.queries.find((q) => q.name === "get_agent_by_pubkey")?.publicKey, publicKey);
+    const { result, trace, fixtureRoot } = invokePairing(scenario.file, scenario.env);
+    assert.match(result.stderr, /Owner-authenticated policy handoff is not available/);
+    assert.deepEqual(trace.queries, []);
+    assert.equal(existsSync(join(fixtureRoot, ".config", "atbash", "pairing")), false);
     if (scenario.env === undefined)
       assert.ok(trace.configReads > 0, "Real SDK config resolution was exercised");
   });
@@ -106,7 +99,7 @@ for (const scenario of [
 ]) {
   test(`packaged pairing CLI refuses ${scenario.name} before queries`, () => {
     const { result, trace, fixtureRoot } = invokePairing(scenario.file, scenario.env);
-    assert.match(result.stderr, /Atbash pairing could not start or finish/);
+    assert.match(result.stderr, /Owner-authenticated policy handoff is not available/);
     assert.deepEqual(trace.queries, []);
     assert.equal(existsSync(join(fixtureRoot, ".config", "atbash", "pairing")), false);
   });

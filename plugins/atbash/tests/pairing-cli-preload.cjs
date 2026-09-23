@@ -104,35 +104,7 @@ for (const api of [http, https]) {
 }
 syncBuiltinESMExports();
 process.on("exit", () => writeTrace(tracePath, JSON.stringify(trace)));
-const { gtv, Buffer: PcBuffer } = require("postchain-client");
-const rid = "0163241d9af137638e63e48efcde15510f38c2426f7ad5dc726af60351bf4dfe";
-globalThis.fetch = async (input, init) => {
-  const url = String(input);
-  if (
-    !["https://node0.testnet.chromia.com", "https://node1.testnet.chromia.com"].some(
-      (node) => url === `${node}/query_gtv/${rid}`,
-    ) ||
-    init?.method !== "POST"
-  ) {
-    trace.network++;
-    throw Error("Unexpected network request");
-  }
-  const [name, args] = gtv.decode(PcBuffer.from(init.body));
-  if (!["get_org_account_id", "get_org_agent_capacity", "get_agent_by_pubkey"].includes(name)) {
-    trace.network++;
-    throw Error("Unexpected query");
-  }
-  trace.queries.push({
-    name,
-    organization: args.org_name ?? null,
-    publicKey: args.pubkey ? Buffer.from(args.pubkey).toString("hex") : null,
-    url,
-  });
-  const result =
-    name === "get_org_account_id"
-      ? PcBuffer.alloc(32, 7)
-      : name === "get_org_agent_capacity"
-        ? { max_agents: 1, active_count: 1, total_count: 1 }
-        : null;
-  return new Response(new Uint8Array(gtv.encode(result)));
+globalThis.fetch = async () => {
+  trace.network++;
+  throw Error("No network request is permitted before owner authorization");
 };

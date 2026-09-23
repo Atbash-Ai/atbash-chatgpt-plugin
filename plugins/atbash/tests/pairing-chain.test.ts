@@ -4,9 +4,8 @@ import test from "node:test";
 import { gtv, Buffer as PcBuffer } from "postchain-client";
 import {
   PAIRING_CHAIN,
-  hasPairingCapacity,
+  createPairingQuery,
   pairingQuery,
-  resolvePairingPolicy,
   verifyPairingChain,
   type PairingQuery,
 } from "../src/atbash/pairing-chain.js";
@@ -82,46 +81,25 @@ test("encodes query bytes and decodes HTTP response bytes through the actual GTV
   assert.equal(await pairingQuery("get_agent_by_pubkey", { pubkey: key }), null);
 });
 
-test("capacity preflight preserves existing identities and fails closed on unavailable or malformed evidence", async () => {
-  const { intent } = fixture();
-  const owner = Buffer.alloc(32, 7);
-  let existing: unknown = null;
-  const capacity: Record<string, unknown> = { max_agents: 1, active_count: 0, total_count: 0 };
-  const query: PairingQuery = async (name, args) => {
-    if (name === "get_org_account_id") return owner;
-    if (name === "get_agent_by_pubkey") return existing;
-    assert.equal(name, "get_org_agent_capacity");
-    assert.deepEqual(args, { org_name: intent.organization, requester_pubkey: owner });
-    return capacity;
-  };
-  const check = () => hasPairingCapacity(intent.organization, intent.publicKey, query);
-  assert.equal(await check(), true);
-  capacity.active_count = 1;
-  capacity.total_count = 1;
-  assert.equal(await check(), false);
-  existing = { pubkey: Buffer.from(intent.publicKey, "hex"), org_name: intent.organization };
-  assert.equal(await check(), true);
-  existing = { pubkey: Buffer.from(intent.publicKey, "hex"), org_name: "other-org" };
-  await assert.rejects(check());
-  existing = undefined;
-  await assert.rejects(check());
-  existing = null;
-  capacity.max_agents = 0;
-  capacity.active_count = 0;
-  assert.equal(await check(), false);
-  for (const field of Object.keys(capacity)) {
-    const original = capacity[field];
-    for (const malformed of [-1, 0.5, "1", undefined, Number.MAX_SAFE_INTEGER + 1]) {
-      capacity[field] = malformed;
-      await assert.rejects(check());
-    }
-    capacity[field] = original;
+test("pairing query transport refuses owner-scoped names before network access", async (t) => {
+  let calls = 0;
+  t.mock.method(globalThis, "fetch", async () => {
+    calls++;
+    throw new Error("Unexpected chain request.");
+  });
+  const query = createPairingQuery(PAIRING_ORIGIN);
+  for (const name of [
+    "get_org_account_id",
+    "get_org_policy",
+    "get_org_policies",
+    "get_org_agent_capacity",
+  ]) {
+    await assert.rejects(
+      query(name as Parameters<PairingQuery>[0], {}),
+      /Unsupported pairing query/,
+    );
   }
-  await assert.rejects(
-    hasPairingCapacity(intent.organization, intent.publicKey, async () => {
-      throw new Error("Unavailable");
-    }),
-  );
+  assert.equal(calls, 0);
 });
 
 test("accepts exact chain readback including GTV-decoded byte fields", async () => {
@@ -181,26 +159,4 @@ test("refuses wrong chain and expired enrollment before querying", async () => {
   assert.equal(await verifyPairingChain({ ...intent, expiresAt: Date.now() - 1 }, query), false);
   assert.equal(calls, 0);
   await assert.rejects(verifyPairingChain(intent, query));
-});
-
-test("pins hashes of stored policy bytes and refuses missing or stale policies", async () => {
-  const owner = Buffer.alloc(32, 7);
-  const row = {
-    name: "safety",
-    needs_reencryption: false,
-    revision: 2,
-    policy_text: "ciphertext-policy",
-    extended_policy: "ciphertext-extended",
-  };
-  const query: PairingQuery = async (name, args) => {
-    if (name === "get_org_account_id") return owner;
-    assert.deepEqual(args, { org_name: "test-org", name: "safety", requester_pubkey: owner });
-    return row;
-  };
-  const policy = await resolvePairingPolicy("test-org", "safety", query);
-  assert.equal(policy.compactHash, createHash("sha256").update(row.policy_text).digest("hex"));
-  assert.equal(policy.policyVersion, "safety@rev2");
-  row.needs_reencryption = true;
-  await assert.rejects(resolvePairingPolicy("test-org", "safety", query));
-  await assert.rejects(resolvePairingPolicy("test-org", "safety", async () => null));
 });

@@ -1,4 +1,3 @@
-import { createHash } from "node:crypto";
 import { gtv, Buffer as PcBuffer } from "postchain-client";
 import type { PairingIntent } from "./pairing-intent.js";
 
@@ -17,21 +16,20 @@ export const PAIRING_TARGETS: Readonly<Record<string, { rid: string; nodes: read
     },
   };
 type Args = Record<string, string | Buffer>;
-type QueryName =
-  | "get_org_account_id"
-  | "get_org_policy"
-  | "get_org_policies"
-  | "get_org_agent_capacity"
-  | "get_agent_by_pubkey"
-  | "get_agent_governance_hashes"
-  | "get_agent_tier_info";
+type QueryName = "get_agent_by_pubkey" | "get_agent_governance_hashes" | "get_agent_tier_info";
 export type PairingQuery = (name: QueryName, args: Args) => Promise<unknown>;
+const READBACK_QUERIES = new Set<string>([
+  "get_agent_by_pubkey",
+  "get_agent_governance_hashes",
+  "get_agent_tier_info",
+]);
 
 /** Only read-only, fixed-chain queries. HTTPS failures never fall back to HTTP. */
 export function createPairingQuery(origin: string, signal?: AbortSignal): PairingQuery {
   const target = PAIRING_TARGETS[origin];
   if (!target) throw new Error("Unsupported pairing network.");
   return async (name, args) => {
+    if (!READBACK_QUERIES.has(name)) throw new Error("Unsupported pairing query.");
     signal?.throwIfAborted();
     const wireArgs = Object.fromEntries(
       Object.entries(args).map(([key, value]) => [
@@ -80,90 +78,9 @@ function hex(value: unknown): string {
     throw new Error("Malformed chain bytes.");
   return Buffer.from(value as Uint8Array).toString("hex");
 }
-const hash = (value: string) => createHash("sha256").update(value, "utf8").digest("hex");
 // Rell booleans travel as GTV integer 0/1. Other truthy/falsy values are invalid.
 const yes = (value: unknown) => value === true || value === 1;
 const no = (value: unknown) => value === false || value === 0;
-
-/** Early UX check only: the registration transaction is the final capacity gate. */
-export async function hasPairingCapacity(
-  organization: string,
-  publicKey: string,
-  query: PairingQuery,
-): Promise<boolean> {
-  const owner = Buffer.from(
-    hex(await query("get_org_account_id", { org_name: organization })),
-    "hex",
-  );
-  if (owner.length !== 32) throw new Error("Organization not found on the pinned chain.");
-  const [capacityRaw, existing] = await Promise.all([
-    query("get_org_agent_capacity", { org_name: organization, requester_pubkey: owner }),
-    query("get_agent_by_pubkey", { pubkey: Buffer.from(publicKey, "hex") }),
-  ]);
-  const capacity = record(capacityRaw);
-  for (const field of ["max_agents", "active_count", "total_count"])
-    if (!Number.isSafeInteger(capacity[field]) || Number(capacity[field]) < 0)
-      throw new Error("Malformed organization capacity.");
-  if (existing !== null) {
-    const agent = record(existing);
-    if (hex(agent.pubkey) !== publicKey || agent.org_name !== organization)
-      throw new Error("Identity does not belong to the selected organization.");
-    return true;
-  }
-  return Number(capacity.active_count) < Number(capacity.max_agents);
-}
-
-export async function resolvePairingPolicy(
-  organization: string,
-  policyName: string,
-  query: PairingQuery = pairingQuery,
-) {
-  const owner = await query("get_org_account_id", { org_name: organization });
-  const ownerHex = hex(owner);
-  if (ownerHex.length !== 64) throw new Error("Organization not found on the pinned chain.");
-  const row = record(
-    await query("get_org_policy", {
-      org_name: organization,
-      name: policyName,
-      requester_pubkey: Buffer.from(ownerHex, "hex"),
-    }),
-  );
-  if (
-    row.name !== policyName ||
-    !no(row.needs_reencryption) ||
-    !Number.isSafeInteger(row.revision) ||
-    Number(row.revision) < 1 ||
-    typeof row.policy_text !== "string" ||
-    !row.policy_text.trim() ||
-    typeof row.extended_policy !== "string"
-  ) {
-    throw new Error("Selected policy is unavailable or needs repair.");
-  }
-  return {
-    policyName,
-    policyRevision: Number(row.revision),
-    policyVersion: `${policyName}@rev${row.revision}`,
-    compactHash: hash(row.policy_text),
-    extendedHash: hash(row.extended_policy),
-  };
-}
-
-export async function resolveDefaultPairingPolicy(
-  organization: string,
-  query: PairingQuery,
-): Promise<string> {
-  const owner = Buffer.from(
-    hex(await query("get_org_account_id", { org_name: organization })),
-    "hex",
-  );
-  if (owner.length !== 32) throw new Error("Organization not found on the pinned chain.");
-  const row = record(
-    await query("get_org_policies", { org_name: organization, requester_pubkey: owner }),
-  );
-  if (typeof row.default_policy_name !== "string" || !row.default_policy_name.trim())
-    throw new Error("Choose an existing organization policy with --policy.");
-  return row.default_policy_name;
-}
 
 /** Readback is a snapshot, not proof that an owner can never change policy.
  * The caller must recheck immediately before the first protected action.
