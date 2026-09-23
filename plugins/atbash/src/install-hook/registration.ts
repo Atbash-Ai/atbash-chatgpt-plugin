@@ -94,10 +94,15 @@ export function inspectRegistration(
       if (spawnable) {
         let supported = false;
         try {
-          const expected = buildAtbashEntry(parsed.script, identity.platform, parsed.interpreter!).hooks[0];
-          supported = group.matcher === "*" && hook.type === "command" &&
-            (hook.async === undefined || hook.async === false) && hook.timeout === expected?.timeout &&
-            statSync(parsed.script).isFile() && statSync(parsed.interpreter!).isFile() &&
+          const expected = buildAtbashEntry(parsed.script, identity.platform, parsed.interpreter!)
+            .hooks[0];
+          supported =
+            group.matcher === "*" &&
+            hook.type === "command" &&
+            (hook.async === undefined || hook.async === false) &&
+            hook.timeout === expected?.timeout &&
+            statSync(parsed.script).isFile() &&
+            statSync(parsed.interpreter!).isFile() &&
             realpathSync(parsed.interpreter!) === realpathSync(process.execPath) &&
             (identity.platform !== "win32" || /\.exe$/i.test(parsed.interpreter!)) &&
             (spelled === expected?.command || spelled === expected?.commandWindows);
@@ -106,7 +111,9 @@ export function inspectRegistration(
         }
         if (!supported) {
           spawnable = false;
-          report.warnings.push(`${label} is not a supported synchronous command covering all tools; re-run install-hook.cjs.`);
+          report.warnings.push(
+            `${label} is not a supported synchronous command covering all tools; re-run install-hook.cjs.`,
+          );
         }
       }
       if (spawnable) report.spawnable += 1;

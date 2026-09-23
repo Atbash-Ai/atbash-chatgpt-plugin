@@ -46,7 +46,21 @@ if (process.platform === "win32") {
         },
       );
     const positive = run(valid);
-    assert.equal(positive.status, 0);
+    const replyCode =
+      /^\{"ok":false,"code":"(path|volume|parent|reparse|ancestor-owner|ancestor-rights|kind|owner|null-dacl|inheritance|principal|inherit-only|rights|exists|operation|ace-type|ace-flags|ace-mask|internal)"\}$/.exec(
+        positive.stdout ?? "",
+      )?.[1] ?? "invalid";
+    const errorCode = (positive.error as NodeJS.ErrnoException | undefined)?.code;
+    assert.equal(
+      positive.status,
+      0,
+      JSON.stringify({
+        status: positive.status,
+        errorCode: errorCode && /^[A-Z0-9_]{1,40}$/.test(errorCode) ? errorCode : null,
+        replyCode,
+        stderrBytes: Buffer.byteLength(positive.stderr ?? ""),
+      }),
+    );
     assert.equal(positive.stdout, '{"ok":true}');
     for (const request of [
       null,

@@ -81,7 +81,9 @@ export function canonicalIntent(intent: PairingIntent): Buffer {
       value !== value.trim() ||
       !value ||
       value.length > 512 ||
-      [...value].some((character) => character.charCodeAt(0) < 32 || character.charCodeAt(0) === 127)
+      [...value].some(
+        (character) => character.charCodeAt(0) < 32 || character.charCodeAt(0) === 127,
+      )
     )
       throw new Error("Invalid pairing label.");
   }

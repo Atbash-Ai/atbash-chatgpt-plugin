@@ -59,6 +59,7 @@ import {
   sameIdentity,
   validateHookScriptPath,
   verifyEntryRoundTrip,
+  windowsPowerShellPath,
   writeHooksFileAtomically,
   type AtbashIdentity,
 } from "../src/install-hook/hooks-file.js";
@@ -273,6 +274,54 @@ test("install-hook: the entry names the plugin's real absolute hook path, forwar
   assert.equal(commandScriptPath("node /a/c.cjs"), undefined, "an unquoted path is not parsed");
   assert.equal(commandScriptPath('python "/a/c.cjs"'), undefined);
   assert.equal(commandScriptPath('"/usr/bin/node" /a/c.cjs'), undefined);
+});
+
+test("install-hook: the host shell starts with the probe's restricted environment", () => {
+  const base: Record<string, string> = {
+    PATH: "",
+    HOME: "",
+    USERPROFILE: "",
+    ATBASH_CODEX_TIMEOUT_MS: "invalid",
+    ATBASH_HOOK_DEADLINE_MS: "",
+  };
+  for (const name of ["SystemRoot", "SYSTEMROOT", "SystemDrive", "TEMP", "TMP", "TMPDIR"]) {
+    const value = process.env[name];
+    if (value !== undefined) base[name] = value;
+  }
+  if (WIN32) base.PATHEXT = process.env.PATHEXT ?? ".COM;.EXE;.BAT;.CMD";
+  const additions = WIN32
+    ? [
+        [],
+        ["APPDATA"],
+        ["LOCALAPPDATA"],
+        ["PSModulePath"],
+        ["APPDATA", "LOCALAPPDATA", "PSModulePath"],
+      ]
+    : [[]];
+  const results = additions.map((names) => {
+    const env = { ...base };
+    for (const name of names) {
+      const value = process.env[name];
+      if (value !== undefined) env[name] = value;
+    }
+    const result = spawnSync(
+      WIN32 ? windowsPowerShellPath(process.env) : "/bin/sh",
+      WIN32
+        ? ["-NoProfile", "-NonInteractive", "-Command", '[Console]::Out.Write("healthy")']
+        : ["-c", "printf healthy"],
+      { cwd: tmpdir(), env, encoding: "utf8", timeout: 5_000, windowsHide: true },
+    );
+    const errorCode = (result.error as NodeJS.ErrnoException | undefined)?.code;
+    return {
+      status: result.status,
+      errorCode: errorCode && /^[A-Z0-9_]{1,40}$/.test(errorCode) ? errorCode : null,
+      stdoutBytes: Buffer.byteLength(result.stdout ?? ""),
+      stderrBytes: Buffer.byteLength(result.stderr ?? ""),
+      healthy: result.stdout === "healthy",
+    };
+  });
+  assert.equal(results[0]?.status, 0, JSON.stringify(results));
+  assert.equal(results[0]?.healthy, true, JSON.stringify(results));
 });
 
 test("install-hook: a hook path containing shell metacharacters or a backslash on POSIX is refused, nothing written", () => {
@@ -1204,8 +1253,14 @@ test("install-hook: status reports no registration as not enforcing, in the summ
 test("install-hook: a file recreated with the same bytes and a reused inode is noticed by its change time", () => {
   // Windows may allocate a different inode, masking a missing ctime check.
   // Exercise the reused-inode case directly as well as the real filesystem below.
-  assert.equal(sameIdentity({ dev: 1, ino: 7, ctimeMs: 10 }, { dev: 1, ino: 7, ctimeMs: 11 }), false);
-  assert.equal(sameIdentity({ dev: 1, ino: 7, ctimeMs: 10 }, { dev: 1, ino: 7, ctimeMs: 10 }), true);
+  assert.equal(
+    sameIdentity({ dev: 1, ino: 7, ctimeMs: 10 }, { dev: 1, ino: 7, ctimeMs: 11 }),
+    false,
+  );
+  assert.equal(
+    sameIdentity({ dev: 1, ino: 7, ctimeMs: 10 }, { dev: 1, ino: 7, ctimeMs: 10 }),
+    true,
+  );
   // ext4 hands a freed inode straight back to the next file, so dev+inode alone compared equal
   // for an unlink-and-recreate with identical bytes (seen on WSL2). The change time is new.
   const home = tempHome();
@@ -1270,7 +1325,8 @@ test("install-hook: an entry whose other platform's spelling names our script is
 });
 
 test("install-hook: status refuses restricted or unsupported registrations as enforcing", async () => {
-  const { inspectRegistration, summarizeRegistrations } = await import("../src/install-hook/registration.js");
+  const { inspectRegistration, summarizeRegistrations } =
+    await import("../src/install-hook/registration.js");
   const home = tempHome();
   try {
     const hooksPath = join(home, "hooks.json");
@@ -1293,9 +1349,34 @@ test("install-hook: status refuses restricted or unsupported registrations as en
       { ...original, hooks: [{ ...hook, type: "prompt" }] },
       { ...original, hooks: [{ ...hook, async: true }] },
       { ...original, hooks: [{ ...hook, async: "false" }] },
-      ...[1, 0, -1, "35", null, undefined].map((timeout) => ({ ...original, hooks: [{ ...hook, timeout }] })),
-      { ...original, hooks: [{ ...hook, command: `${hook.command} ; echo extra`, commandWindows: `${hook.commandWindows ?? hook.command} ; echo extra` }] },
-      ...(WIN32 ? [{ ...original, hooks: [{ ...hook, command: hook.command.replace(/^& /, ""), commandWindows: hook.commandWindows?.replace(/^& /, "") }] }] : []),
+      ...[1, 0, -1, "35", null, undefined].map((timeout) => ({
+        ...original,
+        hooks: [{ ...hook, timeout }],
+      })),
+      {
+        ...original,
+        hooks: [
+          {
+            ...hook,
+            command: `${hook.command} ; echo extra`,
+            commandWindows: `${hook.commandWindows ?? hook.command} ; echo extra`,
+          },
+        ],
+      },
+      ...(WIN32
+        ? [
+            {
+              ...original,
+              hooks: [
+                {
+                  ...hook,
+                  command: hook.command.replace(/^& /, ""),
+                  commandWindows: hook.commandWindows?.replace(/^& /, ""),
+                },
+              ],
+            },
+          ]
+        : []),
     ]) {
       const result = check(bad);
       assert.equal(result.registered, 1, "ownership alone remains distinct from applicability");

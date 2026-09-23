@@ -100,7 +100,7 @@ Try: “Run pwd, then list the files in this repository.” The setup skill can 
 | ------------------------------------------ | ---------------------------------------------------------------------------------------------------------------- |
 | `.agents/plugins/marketplace.json`         | Catalog used by Git-based installation                                                                           |
 | `plugins/atbash/.codex-plugin/plugin.json` | Plugin identity and presentation                                                                                 |
-| `plugins/atbash/hooks/hooks.json`          | Catch-all `PreToolUse` registration (not loaded by the inspected Codex 0.154.0 and 0.155.0 binaries; see above)                                      |
+| `plugins/atbash/hooks/hooks.json`          | Catch-all `PreToolUse` registration (not loaded by the inspected Codex 0.154.0 and 0.155.0 binaries; see above)  |
 | `plugins/atbash/src/`                      | SDK adapter, hook protocol, and user-level hook installer implementation                                         |
 | `plugins/atbash/runtime/`                  | Committed JavaScript bundles (hook, status, `install-hook.cjs`), native SDK bindings, checksums, and SDK license |
 | `plugins/atbash/skills/atbash-setup/`      | Local setup and troubleshooting instructions                                                                     |
