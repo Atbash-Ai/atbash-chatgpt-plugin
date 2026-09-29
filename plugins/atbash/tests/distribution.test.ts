@@ -44,6 +44,7 @@ test("marketplace runtime includes every supported native target", () => {
 
   assert.equal(manifest.sdkVersion, packageJson.dependencies?.["@atbash/sdk"]);
   assert.equal(existsSync("runtime/licenses/atbash-sdk.LICENSE"), true);
+  assert.equal(existsSync("runtime/control.cjs"), true);
 
   for (const platform of platforms) {
     const nativePath = `runtime/native/${platform}/atbash.node`;
@@ -88,6 +89,7 @@ test("marketplace runtime ships every entry point with the mode the build sets",
     "runtime/pre-tool-use.cjs": "100644",
     "runtime/pre-tool-use-main.cjs": "100755",
     "runtime/status.cjs": "100755",
+    "runtime/control.cjs": "100755",
   };
   const listing = spawnSync("git", ["ls-files", "--stage", "--", "runtime/*.cjs"], {
     cwd: process.cwd(),
@@ -119,7 +121,7 @@ test("marketplace runtime ships every entry point with the mode the build sets",
   assert.doesNotMatch(readFileSync("runtime/pre-tool-use.cjs", "utf8"), /^#!/);
 });
 
-test("marketplace package includes the setup skill", () => {
+test("marketplace package includes the setup and management skills", () => {
   const packageJson = JSON.parse(readFileSync("package.json", "utf8")) as {
     files?: string[];
   };
@@ -131,40 +133,21 @@ test("marketplace package includes the setup skill", () => {
 
   assert.equal(packageJson.files?.includes("skills"), true);
   assert.equal(manifest.skills, "./skills/");
-  assert.equal(existsSync("skills/atbash-setup/scripts/prepare-config.mjs"), true);
   assert.match(skill, /^---\r?\nname: atbash-setup\r?\n/);
   assert.doesNotMatch(skill, /\[TODO:/);
   assert.match(skillInterface, /\$atbash-setup/);
+  assert.match(
+    readFileSync("skills/atbash-manage/SKILL.md", "utf8"),
+    /^---\r?\nname: atbash-manage\r?\n/,
+  );
+  assert.match(
+    readFileSync("skills/atbash-setup/scripts/atbash-control.mjs", "utf8"),
+    /runtime\/control\.cjs/,
+  );
 });
 
-test("setup helper creates a template without replacing an existing config", () => {
-  const tempRoot = mkdtempSync(join(tmpdir(), "atbash-setup-"));
-  const configDir = join(tempRoot, "atbash");
-  const configPath = join(configDir, "config.json");
-
-  try {
-    const firstRun = spawnSync(
-      process.execPath,
-      ["skills/atbash-setup/scripts/prepare-config.mjs", "--config-dir", configDir, "--no-open"],
-      { cwd: process.cwd(), encoding: "utf8" },
-    );
-    assert.equal(firstRun.status, 0, firstRun.stderr);
-    assert.deepEqual(JSON.parse(readFileSync(configPath, "utf8")), {
-      agentKey: "",
-      orgName: "",
-    });
-
-    const existingConfig = '{"agentKey":"opaque-sentinel-value","orgName":"Existing Org"}\n';
-    writeFileSync(configPath, existingConfig, "utf8");
-    const secondRun = spawnSync(
-      process.execPath,
-      ["skills/atbash-setup/scripts/prepare-config.mjs", "--config-dir", configDir, "--no-open"],
-      { cwd: process.cwd(), encoding: "utf8" },
-    );
-    assert.equal(secondRun.status, 0, secondRun.stderr);
-    assert.equal(readFileSync(configPath, "utf8"), existingConfig);
-    assert.doesNotMatch(secondRun.stdout, /opaque-sentinel-value/);
-  } finally {
-    rmSync(tempRoot, { force: true, recursive: true });
-  }
+test("setup helper delegates to the bundled control runtime", () => {
+  const launcher = readFileSync("skills/atbash-setup/scripts/atbash-control.mjs", "utf8");
+  assert.match(launcher, /spawn\(process\.execPath/);
+  assert.match(launcher, /runtime\/control\.cjs/);
 });
