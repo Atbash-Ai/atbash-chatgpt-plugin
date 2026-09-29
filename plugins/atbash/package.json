@@ -24,6 +24,6 @@
     "hook:install": "node dist/install-hook.cjs"
   },
   "dependencies": {
-    "@atbash/sdk": "0.7.1"
+    "@atbash/sdk": "0.9.1"
   }
 }

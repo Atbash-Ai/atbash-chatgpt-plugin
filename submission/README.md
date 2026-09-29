@@ -2,7 +2,7 @@
 
 Public source: https://github.com/Atbash-Ai/atbash-chatgpt-plugin/tree/main
 
-Candidate: `atbash` version `0.3.3`, using production `@atbash/sdk@0.7.1`. The plugin implements local `PreToolUse` enforcement plus a setup skill. No MCP server is included.
+Candidate: `atbash` version `0.3.3`, using production `@atbash/sdk@0.9.1`. The plugin implements local `PreToolUse` enforcement plus a setup skill. No MCP server is included.
 
 Run `npm run package:submission` after verification. The resulting `artifacts/submission-manifest.json` records the exact source commit and SHA-256 hashes. A branch URL identifies a moving source; the recorded commit identifies the specific package submitted for review.
 
