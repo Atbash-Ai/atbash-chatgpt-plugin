@@ -1,6 +1,8 @@
 # Atbash Safety for ChatGPT and Codex
 
-Atbash Safety evaluates supported Codex tool calls against your Atbash agent's policy before execution. This repository distributes the complete local plugin: a `PreToolUse` hook, the production npm SDK `@atbash/sdk@0.7.1`, native binaries, and an `atbash-setup` skill. It has no MCP server.
+Atbash Safety evaluates supported Codex tool calls against your Atbash agent's policy before execution. This repository distributes the complete local plugin: a `PreToolUse` hook, the development npm SDK `@atbash/sdk@0.10.10-dev.0`, native binaries, and an `atbash-setup` skill. It has no MCP server.
+
+The development build defaults to `https://chromia-verified-ai-dev-two.vercel.app`. Its public chain is `02668c5218871f69a93cc0f7032dcffe06ef0d35ef2f0b07a92a3d83a3f23a7d` with the standard Chromia testnet nodes, and its private-chain defaults are `2603569ae8dc3f254323f719c8d4347bba964e874e781291f8474236be8b6493` with the three private testnet nodes. The SDK selects the private chain from the organization subscription when `orgName` is configured.
 
 Only `allow: true` with verdict `ALLOW` permits the pending call. `HOLD`, `BLOCK`, invalid configuration, timeout, and service errors deny that attempt. Coverage is limited to tools exposed to the host's `PreToolUse` hook; plain text responses and tools outside that lifecycle are not covered.
 
