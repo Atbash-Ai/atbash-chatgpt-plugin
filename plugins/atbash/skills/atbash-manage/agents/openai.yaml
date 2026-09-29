@@ -1,0 +1,4 @@
+interface:
+  display_name: "Manage Atbash"
+  short_description: "Review and authorize an Atbash agent change"
+  default_prompt: "Use $atbash-manage to prepare an exact Atbash agent change and ask me to approve it in Connect Atbash."
