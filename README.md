@@ -93,7 +93,17 @@ The SDK uses the key locally for identity and signing. The hook calls `auditTool
 
 **Judge endpoint rule.** The judge endpoint defaults to Atbash and can be changed with `ATBASH_ENDPOINT` or `judgeEndpoint` in the config file. The SDK accepts a plain-http loopback endpoint (`http://localhost`, `http://127.0.0.1`, `http://[::1]`) without any response signature, so a program on the same machine could answer `ALLOW` to every call. The hook refuses a loopback or non-https endpoint - every call is denied with a message naming the fix - unless `ATBASH_DEV_ALLOW_LOCAL_JUDGE=1` is set in the hook's own environment **and** `ATBASH_JUDGE_VERIFY_PUBKEY` (or `judgeVerifyPubKey` in the config file) holds the judge's 66-hex response-signing key, in which case the SDK verifies the signature on every verdict. The flag is never read from `~/.config/atbash/config.json`, so an endpoint written there alone cannot switch enforcement off. `node plugins/atbash/runtime/status.cjs` reports the same refusal as a `configuration_error`.
 
-Try: “Run pwd, then list the files in this repository.” The setup skill can explain activation, status results, and key rotation. Disabling the plugin or its hook deactivates enforcement for later calls.
+Try: “Run pwd, then list the files in this repository.” The setup skill can explain activation, status results, and key rotation. Disabling the plugin or its hook deactivates enforcement for later calls; do that yourself, outside Codex - the agent cannot (see below).
+
+### Self-protection
+
+The judge is a language model, so a tricked agent asking to switch Atbash off would otherwise be stopped only if the model recognised the request. Before the judge is asked anything, the hook runs a local, deterministic check (`src/hook/self-protection.ts`) and denies - with a reason telling you to make the change yourself, outside the agent - any tool call that would:
+
+- remove the Atbash hook or plugin (`install-hook.cjs --uninstall`, `codex plugin remove|uninstall|disable atbash…`, a marketplace removal) or switch hooks off (`codex features disable codex_hooks`, `codex_hooks=false`, `--disable …hooks`);
+- set, unset or remove the variables Atbash reads (`ATBASH_AGENT_KEY`, `ATBASH_ORG_NAME`, `ATBASH_ENDPOINT`, `ATBASH_JUDGE_VERIFY_PUBKEY`, `ATBASH_DEFAULT_CHAIN_NETWORK`, `ATBASH_DEV_ALLOW_LOCAL_JUDGE`, `ATBASH_CODEX_TIMEOUT_MS`, `ATBASH_HOOK_DEADLINE_MS`) or point a nested host elsewhere (`CODEX_HOME`, `CLAUDE_CONFIG_DIR`), in any shell spelling;
+- write, patch (`apply_patch` included), move or delete `~/.codex/config.toml` (where hook trust lives), `~/.codex/hooks.json` and `hooks/`, a project's `.codex/hooks.json` or `config.toml`, `~/.codex/plugins/`, managed settings, `~/.config/atbash/` (the key and config file), this plugin's own `runtime/`, `hooks/` and manifest, the Claude Code and Cursor equivalents, or the system hosts file - including a directory that contains one of them.
+
+It sees through quotes and escapes inside words, upper case, `bash -c` / `sh -c` / `eval`, base64 payloads piped to a shell, PowerShell `-EncodedCommand`, `~` / `$HOME` / `%USERPROFILE%`, Git Bash and WSL drive paths, and symlinks or junctions. Reading these files stays allowed: a shell command that names one is denied only when some part of it is not a known read-only command (with writing options such as `sed -i`, `find -exec`, `git -c`, `rg --pre`, `sort -o`, an environment prefix or a command substitution counted as writes). What it cannot see - a script written earlier and run later, a variable assembled piecewise, a tool the host does not route through `PreToolUse` - stays with the judge.
 
 ## Source and distribution
 

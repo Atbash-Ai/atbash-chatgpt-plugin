@@ -55,7 +55,7 @@ Treat Atbash as active only when all of these are true:
 4. The Atbash `PreToolUse` command is trusted in `/hooks`.
 5. Local Atbash credentials and organization configuration are valid.
 
-To deactivate Atbash, tell the user to disable the plugin or untrust/disable its hook in Codex (and, for a user-level registration, run the installer with `--uninstall`). Do not describe deactivation as bypassing an individual verdict; it disables enforcement for subsequent tool calls.
+To deactivate Atbash, tell the user to disable the plugin or untrust/disable its hook in Codex (and, for a user-level registration, run the installer with `--uninstall` from their own terminal). Do not describe deactivation as bypassing an individual verdict; it disables enforcement for subsequent tool calls. Never try to do any of this yourself - run the uninstaller, edit `~/.codex/hooks.json` or `config.toml`, the Atbash config file or the plugin's files, or change `ATBASH_*` variables: the hook denies those tool calls deterministically, before the judge, by design. Tell the user to make the change outside the agent.
 
 ## Codex 0.154+: plugin hooks are not loaded
 
