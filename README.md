@@ -91,6 +91,8 @@ After you confirm that the editor is closed, the setup skill runs the local stat
 
 The SDK uses the key locally for identity and signing. The hook calls `auditToolCall()` with the tool name, arguments, and limited execution context. The SDK handles redaction and communication with Atbash. Network access to Atbash and the configured chain services must be available in the hook's execution environment.
 
+**Judge endpoint rule.** The judge endpoint defaults to Atbash and can be changed with `ATBASH_ENDPOINT` or `judgeEndpoint` in the config file. The SDK accepts a plain-http loopback endpoint (`http://localhost`, `http://127.0.0.1`, `http://[::1]`) without any response signature, so a program on the same machine could answer `ALLOW` to every call. The hook refuses a loopback or non-https endpoint - every call is denied with a message naming the fix - unless `ATBASH_DEV_ALLOW_LOCAL_JUDGE=1` is set in the hook's own environment **and** `ATBASH_JUDGE_VERIFY_PUBKEY` (or `judgeVerifyPubKey` in the config file) holds the judge's 66-hex response-signing key, in which case the SDK verifies the signature on every verdict. The flag is never read from `~/.config/atbash/config.json`, so an endpoint written there alone cannot switch enforcement off. `node plugins/atbash/runtime/status.cjs` reports the same refusal as a `configuration_error`.
+
 Try: “Run pwd, then list the files in this repository.” The setup skill can explain activation, status results, and key rotation. Disabling the plugin or its hook deactivates enforcement for later calls.
 
 ## Source and distribution
