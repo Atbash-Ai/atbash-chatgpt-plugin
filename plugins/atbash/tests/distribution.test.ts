@@ -6,6 +6,26 @@ import test from "node:test";
 
 import { makeHookInput } from "./fixtures.js";
 
+/** The bundles that carry the hook's context builder. */
+const BUNDLES = ["runtime/pre-tool-use-main.cjs", "runtime/index.cjs"];
+
+/**
+ * The model reaches the context only through the checked-model function: the push names a function
+ * whose body tests the model-id shape, masks an AWS account id and falls back to "other".
+ */
+function assertCheckedModel(source: string, bundle: string): void {
+  const call = /`model=\$\{([\w$]+)\([\w$]+\.model\)\}`/.exec(source);
+  assert.ok(call, `${bundle}: the model is not sent through a checking function`);
+  const name = call[1]!.replace(/\$/g, "\\$");
+  assert.match(
+    source,
+    new RegExp(
+      `function ${name}\\(([\\w$]+)\\)\\{return [\\w$]+\\.test\\(\\1\\)\\?\\1\\.replace\\([\\w$]+,":account:"\\):"other"\\}`,
+    ),
+    bundle,
+  );
+}
+
 test("built hook is self-contained and fails closed", () => {
   assert.equal(existsSync(`dist/native/${process.platform}-${process.arch}/atbash.node`), true);
 
@@ -148,4 +168,20 @@ test("setup helper delegates to the bundled control runtime", () => {
   const launcher = readFileSync("skills/atbash-setup/scripts/atbash-control.mjs", "utf8");
   assert.match(launcher, /spawn\(process\.execPath/);
   assert.match(launcher, /runtime\/control\.cjs/);
+});
+
+test("shipped runtime sends only fixed, checked facts in the judge context", () => {
+  // Codex runs the committed runtime, not src, and the judge context is recorded on a public
+  // chain. The builder is pinned, so the check is not vacuous: source, the checked model (any AWS
+  // account id masked) and the closed-set permission mode, and no workspace fact.
+  for (const bundle of BUNDLES) {
+    const source = readFileSync(bundle, "utf8");
+    assert.match(
+      source,
+      /\["source=codex",`model=\$\{[\w$]+\([\w$]+\.model\)\}`,`permission_mode=\$\{[\w$]+\.permission_mode\}`\]/,
+      bundle,
+    );
+    assertCheckedModel(source, bundle);
+    assert.doesNotMatch(source, /workspace=/, bundle);
+  }
 });
