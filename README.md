@@ -40,7 +40,7 @@ The guard allows only an SDK `ALLOW` decision with `allow: true`. `HOLD`, `BLOCK
 
 With each tool call the hook sends the tool name, its arguments (secrets redacted by the SDK) and a short context: `source=codex`, the model and the permission mode.
 
-The judge context is recorded on a public chain, so it never includes the working directory or the workspace folder name: a folder name can identify a client, and it is text a cloned repository controls. The model is sent only when it looks like a model id (letters, digits and `. _ : / @ [ ] -`, at most 128 characters) and as `other` otherwise; the permission mode is one of Codex's fixed values.
+The judge context is recorded on a public chain, so it never includes the working directory or the workspace folder name: a folder name can identify a client, and it is text a cloned repository controls. The model is sent only when it looks like a model id (letters, digits and `. _ : / @ [ ] -`, at most 128 characters) and as `other` otherwise, with any 12-digit AWS account id inside a model ARN sent as `account`; a custom model or gateway name you chose is sent as it is, so do not put client names in it. The permission mode is one of Codex's fixed values.
 
 Tool arguments are a different matter. File paths and commands usually carry the full working directory, including your user name and folder names. Arguments and commands are sent as they are, to the judge and to its model provider, and are recorded on chain in plain text unless your organization enables encryption. Secret redaction is best-effort: it matches known secret patterns and cannot catch everything. Records written by earlier plugin versions, which included `workspace=<folder name>` in the context, stay on chain.
 
