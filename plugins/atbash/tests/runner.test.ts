@@ -27,7 +27,7 @@ test("allows only a canonical ALLOW decision", async () => {
     {
       toolName: "Bash",
       args: { cmd: "git status --short" },
-      context: "source=codex; workspace=example; model=gpt-test; permission_mode=default",
+      context: "source=codex; model=gpt-test; permission_mode=default",
     },
   ]);
 });
