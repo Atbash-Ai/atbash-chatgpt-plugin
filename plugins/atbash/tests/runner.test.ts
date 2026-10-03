@@ -64,6 +64,28 @@ test("host text in the model cannot add facts to the judge context", async () =>
   assert.equal(calls[0]?.context, "source=codex; model=other; permission_mode=default");
 });
 
+test("an AWS account id in a model ARN never reaches the judge context", async () => {
+  // An ARN carries the 12-digit AWS account id, which identifies the customer; the judge context
+  // is recorded on a public chain.
+  const calls: ToolCallInput[] = [];
+  await evaluatePreToolUse(
+    makeHookInput({
+      model: "arn:aws:bedrock:us-east-1:123456789012:inference-profile/openai.gpt-oss-120b",
+    }),
+    () => guardReturning({ allow: true, verdict: "ALLOW" }, calls),
+  );
+
+  assert.equal(calls.length, 1, "the judge must be asked");
+  assert.ok(
+    !calls[0]?.context?.includes("123456789012"),
+    `account id leaked: ${calls[0]?.context}`,
+  );
+  assert.equal(
+    calls[0]?.context,
+    "source=codex; model=arn:aws:bedrock:us-east-1:account:inference-profile/openai.gpt-oss-120b; permission_mode=default",
+  );
+});
+
 test("real model ids reach the judge unchanged", async () => {
   const models = [
     "gpt-5-codex",
