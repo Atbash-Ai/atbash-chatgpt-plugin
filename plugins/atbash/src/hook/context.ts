@@ -1,4 +1,9 @@
+import type { CallOrigin } from "./call-origin.js";
 import type { PreToolUseInput } from "./protocol.js";
+
+/** Placeholder until the rule exists (red commit): the sentence is defined, never added yet. */
+export const CALL_ORIGIN_TOOL_OUTPUT =
+  "call_origin=tool_output (the instruction for this call appeared in a tool output, not in the user request)";
 
 /**
  * The shape of a model id, including provider-prefixed ids such as "openai/gpt-oss-120b". No
@@ -22,7 +27,8 @@ function checkedModel(model: string): string {
  * id (with any AWS account id in an ARN masked) and as "other" otherwise. The permission mode
  * is already one of a closed set (protocol.ts).
  */
-export function buildAtbashContext(input: PreToolUseInput): string {
+export function buildAtbashContext(input: PreToolUseInput, origin: CallOrigin = "unknown"): string {
+  void origin;
   return [
     "source=codex",
     `model=${checkedModel(input.model)}`,
