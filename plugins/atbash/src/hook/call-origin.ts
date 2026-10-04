@@ -353,16 +353,51 @@ function replyAnswers(text: string): string[] {
   }
 }
 
+/** Codex's heading on a user message that quotes parts of an earlier agent response. */
+const ANNOTATIONS_HEADING = "# Response annotations";
+const ANNOTATIONS_CLOSE = "</response-annotations>";
+
+/**
+ * The user's own words in a message that comments on an earlier response (as recorded in real
+ * rollouts): `# Response annotations:\n<Codex's note>\n<response-annotations>\n[{"text","source"}]\n
+ * </response-annotations>\n\n## My request:\n<what the user typed>`. Each item's `text` is selected
+ * from the agent's own earlier response, which an injection can steer toward its target, so neither
+ * it nor Codex's note is the user's (security review 2026-10-04). Only the request after the LAST
+ * closing tag is (a quoted closing tag can only cut the user's words short, never add quoted ones).
+ * Without a closing tag nothing is the user's. An item's own comment, if Codex adds one, is left
+ * out too: its field is not seen in real rollouts, and dropping user words only tightens.
+ */
+function annotatedRequest(text: string): string[] {
+  const close = text.lastIndexOf(ANNOTATIONS_CLOSE);
+  if (close === -1) return [];
+  const request = text
+    .slice(close + ANNOTATIONS_CLOSE.length)
+    .replace(/^\s*## My request:[ \t]*/, "")
+    .trim();
+  return request.length > 0 ? [request] : [];
+}
+
+/**
+ * The first line of a task one agent relays to another ("Message Type: NEW_TASK", then "Task name",
+ * "Sender", "Payload:"). In real rollouts (multi_agent_version v2, 449 sub-agent rollouts checked on
+ * 2026-10-04) relays arrive only as `agent_message` items, ignored below, and the payload is
+ * encrypted; a relay delivered as a user message is not the user's words either.
+ */
+const RELAY_HEADER = /^Message Type: [^\n]*\n/;
+
 /**
  * One text part of a user-role message. Codex puts its own context into user-role messages too:
  * page content the agent read is untrusted; AGENTS.md instructions and other `<...>` harness blocks
  * (environment, heartbeat, goals) are neither the user's words nor tool output, and are ignored, as
- * Claude Code's `isMeta` notes are. Everything else is what the user typed.
+ * Claude Code's `isMeta` notes are. Quoted annotations and relayed agent tasks are not the user's
+ * either. Everything else is what the user typed.
  */
 function userPart(text: string, user: string[], untrusted: string[]): void {
   const head = text.slice(0, 256).trimStart();
   if (UNTRUSTED_BLOCKS.some((tag) => head.startsWith(tag))) untrusted.push(text);
   else if (head.startsWith(USER_REPLY_BLOCK)) user.push(...replyAnswers(text));
+  else if (head.startsWith(ANNOTATIONS_HEADING)) user.push(...annotatedRequest(text));
+  else if (RELAY_HEADER.test(head)) return;
   else if (!head.startsWith("<") && !head.startsWith("# AGENTS.md instructions")) user.push(text);
 }
 
@@ -382,6 +417,9 @@ function outputText(output: unknown): string {
 function readItem(item: unknown, user: string[], untrusted: string[]): void {
   if (item === null || typeof item !== "object") return;
   const it = item as Record<string, unknown>;
+  // A task or reply one agent sends another (sub-agents): never the user's words. Its plain text is
+  // a header, its payload encrypted; it is not tool output this hook can read either.
+  if (it.type === "agent_message") return;
   if (it.type === "message") {
     if (it.role !== "user") return;
     if (typeof it.content === "string") userPart(it.content, user, untrusted);
@@ -403,7 +441,10 @@ function readItem(item: unknown, user: string[], untrusted: string[]): void {
  * User-typed: user-role `message` items (minus Codex's own context blocks), `event_msg` /
  * `user_message` events, and the user messages a `compacted` line keeps. Untrusted: every
  * `*_output` item, and page content Codex attaches to a user message. Assistant, developer,
- * reasoning and inter-agent items are ignored. Items are read in both the current shape
+ * reasoning and inter-agent items (`agent_message`) are ignored, and so are the parts of a user
+ * message that are not the user's: Codex's context blocks, the agent's question in a question
+ * reply, the text an annotation quotes from an earlier response, and a relayed agent task. In a
+ * forked sub-agent's rollout the user messages it inherits from its parent are the user's own. Items are read in both the current shape
  * (`{ type: "response_item", payload }`) and the older top-level shape. Malformed lines (including
  * a first line cut by the tail read) are skipped.
  */
