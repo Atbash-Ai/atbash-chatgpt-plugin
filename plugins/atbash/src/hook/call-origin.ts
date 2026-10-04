@@ -1,5 +1,5 @@
 import { closeSync, constants, fstatSync, openSync, readSync, statSync } from "node:fs";
-import { isAbsolute } from "node:path";
+import { basename, dirname, isAbsolute } from "node:path";
 import { performance } from "node:perf_hooks";
 
 /**
@@ -15,6 +15,10 @@ import { performance } from "node:perf_hooks";
  *   imperative sentence) appeared in tool output earlier in the session, it shares at least two
  *   distinctive words with this call's argument values, and those words appear nowhere in what the
  *   user typed.
+ *
+ *   It is also "tool_output" when this call, or a call earlier in the tail, names the rollout file
+ *   or the sessions folder: the agent can write its own transcript, so a session it wrote to cannot
+ *   vouch for what the user typed (the stricter answer).
  *
  *   "unknown": anything else, including no transcript, an unreadable one, input too large to check
  *   within the time budget, or any doubt. Unknown changes nothing about how the call is judged.
@@ -386,11 +390,23 @@ function annotatedRequest(text: string): string[] {
 const RELAY_HEADER = /^Message Type: [^\n]*\n/;
 
 /**
+ * Codex's local compaction stores the model's own summary of the session as a user-role message
+ * opening with a fixed prefix (codex-rs prompts/templates/compact/summary_prefix.md; before it, the
+ * history bridge in core/templates/compact/history_bridge.md). The model writes it, and an injection
+ * can steer it, so it is never the user's words (security review 2026-10-04). The bridge also quotes
+ * the user's earlier messages; dropping them only tightens.
+ */
+const COMPACTION_PREFIXES = [
+  "Another language model started to solve this problem",
+  "You were originally given instructions from a user over one or more turns",
+];
+
+/**
  * One text part of a user-role message. Codex puts its own context into user-role messages too:
  * page content the agent read is untrusted; AGENTS.md instructions and other `<...>` harness blocks
  * (environment, heartbeat, goals) are neither the user's words nor tool output, and are ignored, as
  * Claude Code's `isMeta` notes are. Quoted annotations and relayed agent tasks are not the user's
- * either. Everything else is what the user typed.
+ * either, and neither is a compaction summary. Everything else is what the user typed.
  */
 function userPart(text: string, user: string[], untrusted: string[]): void {
   const head = text.slice(0, 256).trimStart();
@@ -398,6 +414,7 @@ function userPart(text: string, user: string[], untrusted: string[]): void {
   else if (head.startsWith(USER_REPLY_BLOCK)) user.push(...replyAnswers(text));
   else if (head.startsWith(ANNOTATIONS_HEADING)) user.push(...annotatedRequest(text));
   else if (RELAY_HEADER.test(head)) return;
+  else if (COMPACTION_PREFIXES.some((prefix) => head.startsWith(prefix))) return;
   else if (!head.startsWith("<") && !head.startsWith("# AGENTS.md instructions")) user.push(text);
 }
 
@@ -448,9 +465,13 @@ function readItem(item: unknown, user: string[], untrusted: string[]): void {
  * (`{ type: "response_item", payload }`) and the older top-level shape. Malformed lines (including
  * a first line cut by the tail read) are skipped.
  */
-export function splitTranscript(lines: readonly string[]): TranscriptText {
+export function splitTranscript(
+  lines: readonly string[],
+  sessionMarkers: readonly string[] = [],
+): TranscriptText {
   const user: string[] = [];
   const untrusted: string[] = [];
+  let touchesSession = false;
   for (const line of lines) {
     // One malformed or pathological line is skipped; it never discards the rest of the transcript.
     try {
@@ -461,6 +482,15 @@ export function splitTranscript(lines: readonly string[]): TranscriptText {
         e.payload !== null && typeof e.payload === "object"
           ? (e.payload as Record<string, unknown>)
           : undefined;
+      const callItem = e.type === "response_item" ? payload : e;
+      if (
+        !touchesSession &&
+        sessionMarkers.length > 0 &&
+        typeof callItem?.type === "string" &&
+        callItem.type.endsWith("_call") &&
+        namesSession(line, sessionMarkers)
+      )
+        touchesSession = true;
       if (e.type === "response_item") readItem(payload, user, untrusted);
       else if (e.type === "event_msg") {
         if (payload?.type === "user_message" && typeof payload.message === "string")
@@ -482,7 +512,7 @@ export function splitTranscript(lines: readonly string[]): TranscriptText {
       continue;
     }
   }
-  return { userText: user.join("\n"), untrustedText: untrusted.join("\n") };
+  return { userText: user.join("\n"), untrustedText: untrusted.join("\n"), touchesSession };
 }
 
 export interface TranscriptText {
@@ -490,6 +520,48 @@ export interface TranscriptText {
   userText: string;
   /** Tool results and attachments: content the agent read but the user did not write. */
   untrustedText: string;
+  /** A call in the tail named the rollout file or the sessions folder (see sessionMarkersFor). */
+  touchesSession?: boolean;
+}
+
+/** Backslashes as slashes, lower case: one spelling of a path for every shell and JSON escape. */
+function normalizePathText(text: string): string {
+  return text.replace(/\\+/g, "/").toLowerCase();
+}
+
+/**
+ * What names this session's transcript in a call: the rollout file's name and the sessions folder
+ * that holds it (Codex's own, and the one in the path when it sits under a sessions folder). The
+ * transcript's own folder is not a marker unless it is under a sessions folder: a transcript in a
+ * general folder would otherwise flag every call that works there.
+ *
+ * Security review 2026-10-04 (MEDIUM): an injected agent with a shell can append a forged user line
+ * to its own rollout file and then make the harmful call, so a session whose transcript a call
+ * touched cannot vouch for the user's words.
+ */
+export function sessionMarkersFor(transcriptPath: string): string[] {
+  const markers = [normalizePathText(basename(transcriptPath)), ".codex/sessions/"];
+  const folder = `${normalizePathText(dirname(transcriptPath))}/`;
+  const sessions = folder.lastIndexOf("/sessions/");
+  if (sessions > 0) markers.push(folder.slice(0, sessions + "/sessions/".length));
+  return markers;
+}
+
+/** At most this much of one call is searched for a session marker. */
+const MAX_MARKER_SCAN_CHARS = 1024 * 1024;
+
+function namesSession(text: string, markers: readonly string[]): boolean {
+  const t = normalizePathText(text.slice(0, MAX_MARKER_SCAN_CHARS));
+  return markers.some((marker) => marker.length > 0 && t.includes(marker));
+}
+
+/** The call's arguments as one string; anything that cannot be serialised is empty. */
+function callText(toolInput: unknown): string {
+  try {
+    return typeof toolInput === "string" ? toolInput : (JSON.stringify(toolInput) ?? "");
+  } catch {
+    return "";
+  }
 }
 
 /** Network paths (\\host\share, //host/share) are never opened: no outbound connection from the hook. */
@@ -517,7 +589,10 @@ export function readTranscriptTail(
     const length = Math.min(stat.size, maxBytes);
     const buffer = Buffer.alloc(length);
     const bytesRead = readSync(fd, buffer, 0, length, stat.size - length);
-    return splitTranscript(buffer.subarray(0, bytesRead).toString("utf8").split(/\r?\n/));
+    return splitTranscript(
+      buffer.subarray(0, bytesRead).toString("utf8").split(/\r?\n/),
+      sessionMarkersFor(path),
+    );
   } catch {
     return null;
   } finally {
@@ -531,14 +606,20 @@ export function readTranscriptTail(
   }
 }
 
-/** The fact for one call. Never throws; no transcript, or any failure, is "unknown". */
+/**
+ * The fact for one call. Never throws; no transcript, or any failure, is "unknown". A call that names
+ * the session's transcript, now or earlier in the tail, is "tool_output" (see sessionMarkersFor).
+ */
 export function callOriginFor(
   toolInput: unknown,
   transcriptPath: string | null | undefined,
 ): CallOrigin {
   if (typeof transcriptPath !== "string" || transcriptPath.length === 0) return "unknown";
   try {
-    return classifyCallOrigin(toolInput, readTranscriptTail(transcriptPath));
+    if (namesSession(callText(toolInput), sessionMarkersFor(transcriptPath))) return "tool_output";
+    const transcript = readTranscriptTail(transcriptPath);
+    if (transcript?.touchesSession === true) return "tool_output";
+    return classifyCallOrigin(toolInput, transcript);
   } catch {
     return "unknown";
   }
