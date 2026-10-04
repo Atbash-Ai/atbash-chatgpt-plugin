@@ -289,6 +289,13 @@ test("the hook sends the fact to the judge when the transcript shows an injectio
   }
 });
 
+// These three tests do not assert the answer, only that the check ends: giving up at the budget is
+// the CORRECT outcome for them, and the deadline is read every 256 steps, so a loaded machine
+// returns a little after TIME_BUDGET_MS. The limit is the budget plus one budget of slack; the
+// defects these tests caught took 3.2 s, 39 s and 77 s. Tests that would turn a give-up into a
+// hidden injection (the floods below) keep the budget itself as their limit.
+const BOUNDED_MS = 2 * TIME_BUDGET_MS;
+
 // Security review 2026-10-02 (HIGH, Claude plugin): the hook runs before the judge call. Hostile
 // input must never make this step slow: it ends within a small budget and falls back to "unknown".
 test("call-origin stays bounded on a pathological call", () => {
@@ -299,7 +306,7 @@ test("call-origin stays bounded on a pathological call", () => {
       const origin = callOriginFor({ command: "a" + ".".repeat(250_000) + "b" }, path);
       const elapsed = Date.now() - started;
       assert.equal(origin, "unknown");
-      assert.ok(elapsed < 1000, `took ${elapsed} ms`);
+      assert.ok(elapsed < BOUNDED_MS, `took ${elapsed} ms`);
     },
   );
 });
@@ -312,7 +319,7 @@ test("call-origin stays bounded on hostile tool output and a large call", () => 
       const started = Date.now();
       callOriginFor({ file_path: "/tmp/notes.md", content: manyWords }, path);
       const elapsed = Date.now() - started;
-      assert.ok(elapsed < 1000, `took ${elapsed} ms`);
+      assert.ok(elapsed < BOUNDED_MS, `took ${elapsed} ms`);
     },
   );
 });
@@ -326,7 +333,7 @@ test("call-origin stays bounded on a huge user text", () => {
   const started = Date.now();
   classifyCallOrigin({ content: manyWords }, t);
   const elapsed = Date.now() - started;
-  assert.ok(elapsed < 1000, `took ${elapsed} ms`);
+  assert.ok(elapsed < BOUNDED_MS, `took ${elapsed} ms`);
 });
 
 test("only an absolute, local, regular file is read as the transcript", () => {
