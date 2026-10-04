@@ -14,7 +14,11 @@
 //                  task header                         assistantword / developerword / reasoningword
 //
 // Ids, paths, timestamps, hashes, instructions and encrypted payloads are replaced with fixed
-// values. Long arrays keep their first few items. Review the output before committing it.
+// values. Every number is 0 except a few structural ordinals (NUMBER_KEYS), so no real time, token
+// count, byte offset or rate limit survives. A `type` value is kept only when it is a known item or
+// entry type (KNOWN_TYPES); a configuration value such as a sandbox policy becomes "scrubbed". A
+// relayed task keeps only the four known header labels. Long arrays keep their first few items.
+// Review the output before committing it.
 
 import { readFileSync } from "node:fs";
 import process from "node:process";
@@ -30,7 +34,45 @@ for (const part of selector.split(",")) {
   for (let n = a; n <= (b ?? a); n++) wanted.add(n);
 }
 
-const KEEP_KEYS = new Set(["type", "role"]);
+/** Item and entry types a rollout line can carry; any other `type` value is scrubbed. */
+const KNOWN_TYPES = new Set([
+  "session_meta",
+  "turn_context",
+  "world_state",
+  "response_item",
+  "event_msg",
+  "compacted",
+  "inter_agent_communication_metadata",
+  "token_usage_record",
+  "message",
+  "input_text",
+  "output_text",
+  "encrypted_content",
+  "agent_message",
+  "reasoning",
+  "Reasoning",
+  "function_call",
+  "function_call_output",
+  "custom_tool_call",
+  "custom_tool_call_output",
+  "local_shell_call",
+  "local_shell_call_output",
+  "user_message",
+  "task_started",
+  "task_complete",
+  "item_completed",
+  "token_count",
+]);
+/** Numbers that only describe structure; every other number becomes 0. */
+const NUMBER_KEYS = new Set([
+  "ordinal",
+  "depth",
+  "subagent_history_start_ordinal",
+  "startOffset",
+  "endOffset",
+]);
+/** The header labels of a relayed agent task; any other label is dropped. */
+const RELAY_LABELS = new Set(["Message Type", "Task name", "Sender", "Payload"]);
 const TOOL_NAMES = new Set([
   "exec",
   "apply_patch",
@@ -44,9 +86,10 @@ const ZERO_ID = "00000000-0000-4000-8000-000000000000";
 
 /** Any value with every string replaced: the generic fallback for metadata. */
 function scrubValue(value, key) {
-  if (key === "create_time" && typeof value === "number") return 1790000000;
+  if (typeof value === "number") return NUMBER_KEYS.has(key) ? value : 0;
   if (typeof value === "string") {
-    if (KEEP_KEYS.has(key)) return value;
+    if (key === "role") return value;
+    if (key === "type") return KNOWN_TYPES.has(value) ? value : "scrubbed";
     if (/^[0-9a-f]{8}-[0-9a-f]{4}-/.test(value)) return ZERO_ID;
     if (/^\d{4}-\d{2}-\d{2}T/.test(value)) return "2026-10-04T00:00:00.000Z";
     return "scrubbed";
@@ -155,7 +198,9 @@ function scrubAgentMessage(item) {
     if (part?.encrypted_content !== undefined)
       return { type: part.type, encrypted_content: "ENCRYPTED" };
     if (typeof part?.text === "string") {
-      const labels = [...part.text.matchAll(/^([A-Z][A-Za-z ]+):/gm)].map((m) => m[1]);
+      const labels = [...part.text.matchAll(/^([A-Z][A-Za-z ]+):/gm)]
+        .map((m) => m[1])
+        .filter((label) => RELAY_LABELS.has(label));
       const lines = labels.map((label) =>
         label === "Message Type"
           ? "Message Type: NEW_TASK"
