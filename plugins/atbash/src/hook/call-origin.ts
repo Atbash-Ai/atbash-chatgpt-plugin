@@ -509,6 +509,16 @@ export function splitTranscript(
         }
       } else readItem(e, user, untrusted);
     } catch {
+      // The tail read cuts its first line, which then fails to parse. A call there that named the
+      // session is still seen: the raw fragment is scanned for the markers (tighten-only).
+      if (
+        lines.length > 0 &&
+        line === lines[0] &&
+        !touchesSession &&
+        sessionMarkers.length > 0 &&
+        namesSession(line, sessionMarkers)
+      )
+        touchesSession = true;
       continue;
     }
   }
@@ -547,12 +557,24 @@ export function sessionMarkersFor(transcriptPath: string): string[] {
   return markers;
 }
 
-/** At most this much of one call is searched for a session marker. */
-const MAX_MARKER_SCAN_CHARS = 1024 * 1024;
+/**
+ * Spellings that reach a rollout without naming it (security re-review 2026-10-04): any path into
+ * Codex's home folder (`.codex/`, `.codex` at the end, `$CODEX_HOME`), or a rollout or sessions
+ * `.jsonl` named by pattern. Matching them only adds the fact (tighten-only): at worst the judge is
+ * more careful on a legitimate edit of Codex's own configuration. A path built at run time
+ * (concatenation, an encoded command, a script written first) is out of reach of any string check;
+ * the Codex sandbox, which does not let the agent write its sessions folder, is the control there.
+ */
+function namesCodexHome(t: string): boolean {
+  if (t.includes(".codex/") || /\.codex(?![\w.-])/.test(t) || t.includes("codex_home")) return true;
+  if (!t.includes(".jsonl")) return false;
+  return t.includes("rollout") || t.includes("sessions/");
+}
 
+/** The whole text is scanned, in one linear pass (a cap could hide a marker past it). */
 function namesSession(text: string, markers: readonly string[]): boolean {
-  const t = normalizePathText(text.slice(0, MAX_MARKER_SCAN_CHARS));
-  return markers.some((marker) => marker.length > 0 && t.includes(marker));
+  const t = normalizePathText(text);
+  return namesCodexHome(t) || markers.some((marker) => marker.length > 0 && t.includes(marker));
 }
 
 /** The call's arguments as one string; anything that cannot be serialised is empty. */
