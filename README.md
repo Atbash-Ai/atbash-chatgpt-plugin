@@ -32,6 +32,8 @@ Run `$atbash-setup` before trusting the hook, because an unconfigured hook denie
 node plugins/atbash/runtime/status.cjs
 ```
 
+The installer registers the absolute path of the node that ran it and of the hook script, so the hook does not depend on the `PATH` of whatever launched Codex. The plugin's bundled `hooks/hooks.json` entry, by contrast, runs a bare `node` and a `$PLUGIN_ROOT` / `$env:PLUGIN_ROOT` placeholder: it depends on `node` being on the host's PATH and on `PLUGIN_ROOT` being exported by the host, so it is not a gate on its own.
+
 The commands above assume you are in the repository checkout. From an installed plugin, use the corresponding `runtime/` paths. The status command checks both agent readiness and hook registration. Try a harmless tool call such as listing the current directory after it reports ready.
 
 The guard allows only an SDK `ALLOW` decision with `allow: true`. `HOLD`, `BLOCK`, invalid configuration, and service errors deny the pending call. Enforcement covers tool calls exposed to the host's `PreToolUse` hook.
