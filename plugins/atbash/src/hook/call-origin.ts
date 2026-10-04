@@ -328,6 +328,32 @@ const UNTRUSTED_BLOCKS = ["<in-app-browser-context", "<external_codex_apps_open_
 const USER_REPLY_BLOCK = "<send_user_message_question_reply";
 
 /**
+ * The user's own answers in a question-reply block:
+ * `<send_user_message_question_reply>\n[{"questionItemId","question","answer"}]`. Only each `answer`
+ * is the user's; the `question` is the agent's text, and an injection could make the agent ask about
+ * its target so that those words would count as typed by the user (security review 2026-10-04).
+ * Anything that does not parse to that shape adds nothing: dropping user words only tightens.
+ */
+function replyAnswers(text: string): string[] {
+  try {
+    const start = text.indexOf(">");
+    const close = text.lastIndexOf("</send_user_message_question_reply>");
+    const body = text.slice(start + 1, close > start ? close : text.length).trim();
+    const items: unknown = JSON.parse(body);
+    if (!Array.isArray(items)) return [];
+    const answers: string[] = [];
+    for (const item of items) {
+      if (item === null || typeof item !== "object") continue;
+      const answer = (item as Record<string, unknown>).answer;
+      if (typeof answer === "string") answers.push(answer);
+    }
+    return answers;
+  } catch {
+    return [];
+  }
+}
+
+/**
  * One text part of a user-role message. Codex puts its own context into user-role messages too:
  * page content the agent read is untrusted; AGENTS.md instructions and other `<...>` harness blocks
  * (environment, heartbeat, goals) are neither the user's words nor tool output, and are ignored, as
@@ -336,7 +362,7 @@ const USER_REPLY_BLOCK = "<send_user_message_question_reply";
 function userPart(text: string, user: string[], untrusted: string[]): void {
   const head = text.slice(0, 256).trimStart();
   if (UNTRUSTED_BLOCKS.some((tag) => head.startsWith(tag))) untrusted.push(text);
-  else if (head.startsWith(USER_REPLY_BLOCK)) user.push(text);
+  else if (head.startsWith(USER_REPLY_BLOCK)) user.push(...replyAnswers(text));
   else if (!head.startsWith("<") && !head.startsWith("# AGENTS.md instructions")) user.push(text);
 }
 
