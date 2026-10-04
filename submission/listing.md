@@ -16,7 +16,7 @@
 
 ## Long description
 
-Atbash Safety evaluates supported Codex tool calls before execution using policies configured in Atbash. While the plugin's trusted `PreToolUse` hook is active, the Atbash SDK submits the tool name, SDK-redacted arguments, and minimal execution context for a safety judgment. `ALLOW` continues the call; `HOLD`, `BLOCK`, errors, timeouts, malformed decisions, or invalid configuration stop that attempt.
+Atbash Safety evaluates supported Codex tool calls before execution using policies configured in Atbash. While the plugin's trusted `PreToolUse` hook is active, the Atbash SDK submits the tool name, SDK-redacted arguments, and minimal execution context for a safety judgment. To spot prompt injection, the hook also reads the end of the local Codex session (rollout) file on your machine; nothing read from it leaves the machine except, when an instruction in earlier tool output matches the call, one fixed sentence saying so. `ALLOW` continues the call; `HOLD`, `BLOCK`, errors, timeouts, malformed decisions, or invalid configuration stop that attempt.
 
 A bundled setup skill guides users through local credential configuration, activation, status checks, troubleshooting, and key rotation without asking them to upload or reveal their private key. The private key remains in the user's local Atbash SDK configuration and is used locally for agent identity and cryptographic signing.
 
