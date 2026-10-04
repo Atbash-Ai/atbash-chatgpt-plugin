@@ -84,9 +84,20 @@ export function assertRegularFile(path, lstat = lstatSync) {
 // The two checks above compare path strings and look only at the last component, so a package that
 // holds a linked folder (package/bin -> somewhere else) and reports bin/x.node passes both. The
 // file's real location, every link resolved, must still be inside the package's real folder.
+// A link Windows tar writes for a folder cannot be resolved (EPERM) although copyFile follows it,
+// so a location that cannot be resolved is refused too, with the same message.
 export function assertInsidePackage(extractDir, target) {
-  const packageRoot = realpathSync(resolve(extractDir, "package"));
-  const real = realpathSync(target);
+  let packageRoot;
+  let real;
+  try {
+    packageRoot = realpathSync(resolve(extractDir, "package"));
+    real = realpathSync(target);
+  } catch (error) {
+    throw new Error(
+      `Refusing native file ${JSON.stringify(target)}: it leaves the package (its real location cannot be resolved: ${error.code ?? error.message}).`,
+      { cause: error },
+    );
+  }
   if (!real.startsWith(packageRoot + sep)) {
     throw new Error(`Refusing native file ${JSON.stringify(target)}: it leaves the package.`);
   }
