@@ -283,7 +283,20 @@ test("a real Codex rollout's structure, scrubbed: only what the user typed count
     assert.equal(t.userText.includes(word), false, `${word} counted as the user's`);
   }
   assert.match(t.untrustedText, /toolword/);
-  assert.equal(t.untrustedText.includes("userword"), false, t.untrustedText);
+  // Only tool output is untrusted text: the user's words, the harness's own notes, a relayed task,
+  // quoted annotation text and the agent's own items are none of it.
+  for (const word of [
+    "userword",
+    "quotedword",
+    "harnessnote",
+    "harnessword",
+    "relayword",
+    "assistantword",
+    "developerword",
+    "reasoningword",
+  ]) {
+    assert.equal(t.untrustedText.includes(word), false, `${word} counted as tool output`);
+  }
 });
 
 test("user messages are read from events, compacted history and the older line shape", () => {
@@ -489,7 +502,13 @@ test("only an absolute, local, regular file is read as the transcript", () => {
       null,
       "a // network path",
     );
-    assert.ok(Date.now() - started < 1000, "network paths are refused before any connection");
+    // Refused by shape, before any connection: an attempted SMB connection to an unreachable host
+    // waits tens of seconds on Windows. The limit leaves a loaded machine room (a bare 1 s could flake).
+    const NO_CONNECTION_MS = 5000;
+    assert.ok(
+      Date.now() - started < NO_CONNECTION_MS,
+      "network paths are refused before any connection",
+    );
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
