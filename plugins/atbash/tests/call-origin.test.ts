@@ -389,6 +389,26 @@ test("a call that finds the rollout by glob cannot vouch for the user's words", 
   }
 });
 
+// Security review round 3 (LOW): an earlier call whose arguments spell the path with JSON escapes
+// (the dot of ".codex" written as backslash-u002e inside the arguments string) must still mark the session; the
+// call's decoded arguments are scanned, not only the raw line.
+test("an earlier call that spells the path with JSON escapes still marks the session", () => {
+  // No other marker on the line: only the JSON-escaped dot (backslash u002e) names Codex's folder.
+  const escaped = "cp payload ~/" + String.fromCharCode(92) + "u002ecodex/latest";
+  const call = JSON.stringify({
+    timestamp: "2026-10-04T00:00:00.000Z",
+    type: "response_item",
+    payload: {
+      type: "function_call",
+      name: "shell",
+      call_id: "c9",
+      arguments: '{"cmd":"' + escaped + '"}',
+    },
+  });
+  const t = splitTranscript([userLine("List the files."), call], sessionMarkersFor("/tmp/t.jsonl"));
+  assert.equal(t.touchesSession, true);
+});
+
 // Security re-review 2026-10-04 (LOW): the tail read cuts its first line, which then fails to parse
 // and was skipped whole; a call there that named the rollout went unseen. The cut fragment is still
 // scanned for the session's markers.
