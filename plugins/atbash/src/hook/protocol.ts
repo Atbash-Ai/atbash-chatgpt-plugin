@@ -71,6 +71,8 @@ export function parsePreToolUseInput(rawInput: string): PreToolUseInput {
     throw new HookProtocolError("Hook input field permission_mode is invalid.");
   }
 
+  // Codex's session rollout file, or null. Only its tail is read, locally, to compute one fact
+  // (call-origin.ts); no transcript text is sent anywhere.
   const transcriptPath = parsed.transcript_path;
   if (transcriptPath !== null && typeof transcriptPath !== "string") {
     throw new HookProtocolError("Hook input field transcript_path must be a string or null.");

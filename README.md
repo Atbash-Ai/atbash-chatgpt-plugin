@@ -36,6 +36,12 @@ The commands above assume you are in the repository checkout. From an installed 
 
 The guard allows only an SDK `ALLOW` decision with `allow: true`. `HOLD`, `BLOCK`, invalid configuration, and service errors deny the pending call. Enforcement covers tool calls exposed to the host's `PreToolUse` hook.
 
+## What the hook sends
+
+With each tool call the hook sends the tool name, its arguments (secrets redacted by the SDK), and a short context: `source=codex`, the workspace folder name, the model and the permission mode.
+
+It also reads the end of the local Codex session transcript (the rollout file Codex names in `transcript_path`, at most 2 MB) to compute one fact. When an instruction addressed to the agent appears in earlier tool output (a web page, file, email or command result), matches this call, and was never typed by the user, the context gains `call_origin=tool_output (the instruction for this call appeared in a tool output, not in the user request)`. That is a sign of prompt injection, and the judge treats the call more carefully. The fact is a fixed sentence, the same one the Claude Code plugin sends: no transcript text is sent anywhere. Without a transcript, or when in doubt, nothing is added. The check is linear and capped, gives up after 1 second, and opens only an absolute, local, regular file.
+
 ## Build from source
 
 ```bash
