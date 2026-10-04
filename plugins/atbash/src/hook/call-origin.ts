@@ -488,7 +488,8 @@ export function splitTranscript(
         sessionMarkers.length > 0 &&
         typeof callItem?.type === "string" &&
         callItem.type.endsWith("_call") &&
-        namesSession(line, sessionMarkers)
+        (namesSession(line, sessionMarkers) ||
+          namesSession(decodedCallText(callItem), sessionMarkers))
       )
         touchesSession = true;
       if (e.type === "response_item") readItem(payload, user, untrusted);
@@ -575,6 +576,27 @@ function namesCodexHome(t: string): boolean {
 function namesSession(text: string, markers: readonly string[]): boolean {
   const t = normalizePathText(text);
   return namesCodexHome(t) || markers.some((marker) => marker.length > 0 && t.includes(marker));
+}
+
+/**
+ * A tail call item with its arguments decoded: a function call's `arguments` is itself a JSON string,
+ * so an escape the model wrote inside it (the dot of ".codex" as a unicode escape) survives in the
+ * raw line. Parsing it and serialising the result again spells every such character plainly.
+ */
+function decodedCallText(item: Record<string, unknown>): string {
+  const parts: string[] = [];
+  for (const key of ["arguments", "input", "action"]) {
+    const value = item[key];
+    if (typeof value === "string") {
+      parts.push(value);
+      try {
+        parts.push(JSON.stringify(JSON.parse(value)) ?? "");
+      } catch {
+        // not JSON: the plain string above is what the call said
+      }
+    } else if (value !== undefined) parts.push(callText(value));
+  }
+  return parts.join("\n");
 }
 
 /** The call's arguments as one string; anything that cannot be serialised is empty. */
