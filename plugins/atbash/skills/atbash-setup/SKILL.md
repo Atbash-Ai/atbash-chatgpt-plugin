@@ -49,6 +49,8 @@ List profiles with `profile list --host codex`, select one with `profile switch 
 
 If there is no selected profile, the hook keeps the legacy SDK configuration behavior. If `ATBASH_AGENT_KEY` or `ATBASH_ORG_NAME` conflicts with a selected profile, report the conflict and ask the user to remove or correct the override locally. Never inspect the conflicting key.
 
+The plugin's bundled `hooks/hooks.json` entry runs a bare `node` and a `PLUGIN_ROOT` placeholder: it depends on `node` being on the host's PATH and on `PLUGIN_ROOT` being exported by the host, so it is not a gate on its own. The user-level installer (`node <skill-directory>/../../runtime/install-hook.cjs`) registers absolute node and hook paths instead and checks the command runs before writing it.
+
 The hook remains fail closed throughout setup. If an already-trusted unconfigured hook blocks the helper, explain the actual block and the minimum user action needed to unblock setup; do not disable or bypass the hook yourself. Offer running the launcher outside the guarded task only when this block has actually occurred, then resume the job yourself.
 
 If the API fails, report the failing step and the returned error. A backend error is not a reason to hand the same command to the user or ask them to supply backend credentials. Do not repeatedly create sessions or claim that a manual command will fix a server failure.

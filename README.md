@@ -32,9 +32,19 @@ Run `$atbash-setup` before trusting the hook, because an unconfigured hook denie
 node plugins/atbash/runtime/status.cjs
 ```
 
+The installer registers the absolute path of the node that ran it and of the hook script, so the hook does not depend on the `PATH` of whatever launched Codex. The plugin's bundled `hooks/hooks.json` entry, by contrast, runs a bare `node` and a `$PLUGIN_ROOT` / `$env:PLUGIN_ROOT` placeholder: it depends on `node` being on the host's PATH and on `PLUGIN_ROOT` being exported by the host, so it is not a gate on its own.
+
 The commands above assume you are in the repository checkout. From an installed plugin, use the corresponding `runtime/` paths. The status command checks both agent readiness and hook registration. Try a harmless tool call such as listing the current directory after it reports ready.
 
 The guard allows only an SDK `ALLOW` decision with `allow: true`. `HOLD`, `BLOCK`, invalid configuration, and service errors deny the pending call. Enforcement covers tool calls exposed to the host's `PreToolUse` hook.
+
+## What the hook sends
+
+With each tool call the hook sends the tool name, its arguments (secrets redacted by the SDK), and a short context: `source=codex`, the workspace folder name, the model and the permission mode.
+
+It also reads the end of the local Codex session transcript (the rollout file Codex names in `transcript_path`, at most 2 MiB) to compute one fact. When an instruction addressed to the agent appears in earlier tool output (a web page, file, email or command result), matches this call, and was never typed by the user, the context gains `call_origin=tool_output (the instruction for this call appeared in a tool output, not in the user request)`. That is a sign of prompt injection, and the judge treats the call more carefully. The fact is a fixed sentence, the same one the Claude Code plugin sends. The transcript is read only on your machine: only that fixed sentence leaves it, never any transcript text. Codex's own compaction summary is not counted as the user's words. Because the agent could write to its own rollout file, a call that points into Codex's home folder (`.codex`, `$CODEX_HOME`) or names a rollout or sessions `.jsonl` file by path or pattern, in this call or in a call still within the last 2 MiB of the transcript, also gains the fact. That is a string check: a path the agent builds at run time, or a pattern that wildcards the `.codex` folder name itself (such as `~/.c?dex`), escapes it. What stops the agent writing its own transcript is the Codex sandbox (the default workspace-write sandbox does not let it write the sessions folder), not this check; with the sandbox off (`danger-full-access` or a bypass mode) nothing stops it, and the check is the only, partial, signal. Without a transcript, or when in doubt, nothing is added. The check is linear and capped, gives up after 1 second, and opens only an absolute, local, regular file.
+
+Only what you typed counts as your words: your messages, your answers to the agent's questions, and your request under a comment on an earlier response. Codex's own context blocks, the agent's question, text quoted from an earlier response, and a task one agent relays to another (sub-agents) do not.
 
 ## Build from source
 
