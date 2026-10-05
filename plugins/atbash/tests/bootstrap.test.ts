@@ -123,6 +123,36 @@ test("denies chained, look-alike, and unrelated commands", () => {
   );
 });
 
+// A skill is a file the assistant must read before it can follow it, and on
+// Codex that read is a shell command. Without this, the setup skill is
+// unreadable and setup cannot begin — captured verbatim from Codex 0.160.0.
+test("allows reading the skill's own instructions", () => {
+  const skill = `${ROOT}/skills/atbash-setup/SKILL.md`;
+  for (const command of [
+    `Get-Content -Raw '${skill}'`,
+    `Get-Content -Raw -LiteralPath '${skill}'`,
+    `cat "${skill}"`,
+    `Get-Content '${ROOT}/skills/atbash-manage/SKILL.md'`,
+  ]) {
+    assert.equal(isSetupToolCall(shell(command), options), true, command);
+  }
+});
+
+test("a skill read cannot be pointed outside the plugin's skills directory", () => {
+  for (const command of [
+    `Get-Content -Raw '${ROOT}/runtime/manifest.json'`,
+    `Get-Content -Raw 'C:/Users/someone/.ssh/id_rsa'`,
+    `Get-Content -Raw '${ROOT}/skills/../../../secrets.txt'`,
+    `Get-Content -Raw '${ROOT}/skills/atbash-setup/SKILL.md' -OutVariable x`,
+    `Get-Content -Raw '${ROOT}/skills/a.md' '${ROOT}/../b.md'`,
+    `Get-Content -Raw '${ROOT}/skills/atbash-setup/SKILL.md' && cat secrets`,
+    `Remove-Item '${ROOT}/skills/atbash-setup/SKILL.md'`,
+    `Get-Content`,
+  ]) {
+    assert.equal(isSetupToolCall(shell(command), options), false, command);
+  }
+});
+
 // Captured from Codex 0.160.0: writing a file is a shell command, so it is
 // denied like any other. This is why the plan goes in through --json.
 test("denies the shell commands Codex uses to write and read files", () => {

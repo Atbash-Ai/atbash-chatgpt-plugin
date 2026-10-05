@@ -1,5 +1,5 @@
 import { existsSync, lstatSync, readFileSync, realpathSync } from "node:fs";
-import { dirname, isAbsolute, join, resolve } from "node:path";
+import { dirname, isAbsolute, join, resolve, sep } from "node:path";
 import { getConfigPath, keyPathCandidates } from "@atbash/sdk";
 
 import type { ControlHost } from "../control/protocol.js";
@@ -36,6 +36,23 @@ const SETUP_COMMANDS = new Set([
 ]);
 const UNQUOTED_WORD_CHAR = /^[A-Za-z0-9_./:@=+,%-]$/;
 const DOUBLE_QUOTE_ESCAPES = new Set(["$", "`", '"', "\\", "\n"]);
+/**
+ * Reading the skill's own instructions.
+ *
+ * A skill is a file the assistant has to read before it can follow it, and on
+ * Codex reading a file is a shell command like any other — so without this the
+ * setup skill is unreadable and setup cannot begin at all. Confirmed against
+ * Codex 0.160.0, which reads it with `Get-Content -Raw '<path>'`.
+ *
+ * Scoped to files shipped inside the plugin's own `skills/` directory, which
+ * are public plugin content, and still subject to the same splitter: anything
+ * chained, redirected or expanded is not a plain command and never matches.
+ */
+const READERS = new Set(["Get-Content", "get-content", "cat", "type"]);
+/** Flags that take no value; anything else non-flag must be the path itself. */
+const READ_FLAGS = new Set(["-Raw", "-raw", "-Force", "-force", "--"]);
+/** Flags whose value IS the path, so the path still arrives as the lone non-flag word. */
+const READ_PATH_FLAGS = new Set(["-LiteralPath", "-literalpath", "-Path", "-path"]);
 
 export interface SetupBootstrap {
   hasConfiguration(): boolean;
@@ -166,6 +183,25 @@ function isSetupCommand(command: string, cwd: string, pluginRoot: string): boole
   return !args.some((arg) => arg === "--service" || arg.startsWith("--service="));
 }
 
+/**
+ * A plain read of one file inside the plugin's own `skills/` directory.
+ *
+ * Exactly one non-flag argument is permitted, and it must resolve inside that
+ * directory — so the command cannot be pointed anywhere else, and cannot carry
+ * a second path alongside the permitted one.
+ */
+function isSkillRead(command: string, cwd: string, pluginRoot: string): boolean {
+  const words = splitPlainCommand(command);
+  if (!words || words.length < 2) return false;
+  const [program, ...rest] = words;
+  if (!READERS.has(program ?? "")) return false;
+  const targets = rest.filter((word) => !READ_FLAGS.has(word) && !READ_PATH_FLAGS.has(word));
+  if (targets.length !== 1) return false;
+  const skills = canonical(join(pluginRoot, "skills"));
+  const target = canonical(isAbsolute(targets[0]!) ? targets[0]! : resolve(cwd, targets[0]!));
+  return target.startsWith(skills + sep);
+}
+
 function record(value: unknown): Record<string, unknown> | undefined {
   return typeof value === "object" && value !== null && !Array.isArray(value)
     ? (value as Record<string, unknown>)
@@ -186,7 +222,11 @@ export function isSetupToolCall(
   const toolInput = record(input.tool_input);
   const command = toolInput?.command;
   if (typeof command !== "string" || command === "") return false;
-  return options.pluginRoot !== undefined && isSetupCommand(command, input.cwd, options.pluginRoot);
+  if (options.pluginRoot === undefined) return false;
+  return (
+    isSetupCommand(command, input.cwd, options.pluginRoot) ||
+    isSkillRead(command, input.cwd, options.pluginRoot)
+  );
 }
 
 /** The plugin root is two levels above the running hook script (runtime/pre-tool-use.cjs). */
