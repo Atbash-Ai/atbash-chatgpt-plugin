@@ -1,33 +1,71 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
 import test from "node:test";
 
+import { NOT_SET_UP_REASON } from "../src/hook/bootstrap.js";
+import type { PreToolUseInput } from "../src/hook/protocol.js";
 import { makeHookInput } from "./fixtures.js";
+
+// Run built hooks against an empty home so the developer's own Atbash setup
+// cannot leak in and decide which branch of the guard these tests exercise.
+function runHook(script: string, input: PreToolUseInput = makeHookInput()) {
+  const home = mkdtempSync(join(tmpdir(), "atbash-dist-"));
+  const env: NodeJS.ProcessEnv = {
+    ...process.env,
+    HOME: home,
+    USERPROFILE: home,
+    ATBASH_CONFIG_DIR: join(home, ".config", "atbash"),
+    ATBASH_CODEX_TIMEOUT_MS: "invalid",
+    ATBASH_HOOK_DEADLINE_MS: "",
+  };
+  delete env.ATBASH_AGENT_KEY;
+  delete env.ATBASH_ORG_NAME;
+  return spawnSync(process.execPath, [script], {
+    cwd: process.cwd(),
+    encoding: "utf8",
+    env,
+    input: JSON.stringify(input),
+  });
+}
+
+const notSetUp = {
+  hookSpecificOutput: {
+    hookEventName: "PreToolUse",
+    permissionDecision: "deny",
+    permissionDecisionReason: NOT_SET_UP_REASON,
+  },
+};
 
 test("built hook is self-contained and fails closed", () => {
   assert.equal(existsSync(`dist/native/${process.platform}-${process.arch}/atbash.node`), true);
 
-  const result = spawnSync(process.execPath, ["dist/pre-tool-use.cjs"], {
-    cwd: process.cwd(),
-    encoding: "utf8",
-    env: {
-      ...process.env,
-      ATBASH_CODEX_TIMEOUT_MS: "invalid",
-      ATBASH_HOOK_DEADLINE_MS: "",
-    },
-    input: JSON.stringify(makeHookInput()),
-  });
+  const result = runHook("dist/pre-tool-use.cjs");
 
   assert.equal(result.status, 0, result.stderr);
-  assert.deepEqual(JSON.parse(result.stdout), {
-    hookSpecificOutput: {
-      hookEventName: "PreToolUse",
-      permissionDecision: "deny",
-      permissionDecisionReason: "Atbash ERROR: configuration is missing or invalid.",
-    },
-  });
+  assert.deepEqual(JSON.parse(result.stdout), notSetUp);
+});
+
+test("built runtime lets setup run before any configuration exists", () => {
+  const launcher = resolve("skills/atbash-setup/scripts/atbash-control.mjs");
+  const command = (value: string) =>
+    makeHookInput({ tool_name: "Bash", tool_input: { command: value } });
+
+  const allowed = runHook(
+    "runtime/pre-tool-use.cjs",
+    command(`node "${launcher}" setup start --host codex`),
+  );
+  const chained = runHook(
+    "runtime/pre-tool-use.cjs",
+    command(`node "${launcher}" setup start --host codex && cat ~/.ssh/id_rsa`),
+  );
+
+  assert.equal(allowed.status, 0, allowed.stderr);
+  assert.equal(allowed.stdout, "");
+  assert.deepEqual(JSON.parse(chained.stdout), notSetUp);
 });
 
 test("marketplace runtime includes every supported native target", () => {
@@ -55,25 +93,10 @@ test("marketplace runtime includes every supported native target", () => {
     );
   }
 
-  const result = spawnSync(process.execPath, ["runtime/pre-tool-use.cjs"], {
-    cwd: process.cwd(),
-    encoding: "utf8",
-    env: {
-      ...process.env,
-      ATBASH_CODEX_TIMEOUT_MS: "invalid",
-      ATBASH_HOOK_DEADLINE_MS: "",
-    },
-    input: JSON.stringify(makeHookInput()),
-  });
+  const result = runHook("runtime/pre-tool-use.cjs");
 
   assert.equal(result.status, 0, result.stderr);
-  assert.deepEqual(JSON.parse(result.stdout), {
-    hookSpecificOutput: {
-      hookEventName: "PreToolUse",
-      permissionDecision: "deny",
-      permissionDecisionReason: "Atbash ERROR: configuration is missing or invalid.",
-    },
-  });
+  assert.deepEqual(JSON.parse(result.stdout), notSetUp);
 });
 
 test("marketplace runtime ships every entry point with the mode the build sets", () => {

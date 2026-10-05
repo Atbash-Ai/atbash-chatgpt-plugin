@@ -17,23 +17,25 @@ After a user completes verification or approval, inspect the same job and perfor
 
 ## Start or resume setup
 
-Run the helper through this skill's `scripts/atbash-control.mjs` launcher:
+Run the helper through this skill's `scripts/atbash-control.mjs` launcher, using the absolute skill directory:
 
 ```text
-node <skill-directory>/scripts/atbash-control.mjs setup start --host codex
+node "<skill-directory>/scripts/atbash-control.mjs" setup start --host codex
 ```
 
-The result contains a public `verificationUri`, verification code, and opaque job ID. Show the URL and code to the user and ask them to complete wallet verification in **Connect Atbash**. Never expose files under `~/.config/atbash/pending`, `credentials`, `profiles`, or `hosts`.
+Until setup activates a profile, the hook allows only these setup steps and denies everything else with "Atbash is not set up yet". Run each helper command as one plain command in exactly this form: no `cd`, `&&`, `;`, pipes, redirection, environment-variable prefixes, or command substitution, and no `--service` option. Commands in any other form are denied.
+
+The result contains a public `verificationUri`, verification code, opaque job ID, and `planPath`. Show the URL and code to the user and ask them to complete wallet verification in **Connect Atbash**, then come back to the conversation. Never expose files under `~/.config/atbash/pending`, `credentials`, `profiles`, or `hosts`.
 
 Inspect progress with `setup inspect <job-id>` through the same launcher. Follow `nextAction`:
 
 - `OPEN_BROWSER`: the user completes sign-in and wallet verification in the provided page.
-- `PREPARE_PLAN`: use discovery to determine what exists. Ask for any missing names or choices, create the non-secret plan JSON file containing only `actions` yourself, then run `setup plan <job-id> --input <path>`. Do not ask the user to write JSON or run the command.
+- `PREPARE_PLAN`: use discovery to determine what exists. Ask for any missing names or choices, then build a non-secret plan JSON containing only `actions` yourself and pass it to the launcher inline, as one single-quoted argument: `setup plan <job-id> --json '{"actions":[...]}'`. Do not write it to a file first — writing a file means running a shell command, which setup mode does not allow. Do not ask the user to write JSON or run the command.
 - `REVIEW_IN_BROWSER`: the user reviews and signs the exact proposal in Connect Atbash. Do not approve it for them.
 - `WAIT`: inspect again after the returned poll interval, or after two seconds if none is present. Keep the user informed during longer waits; stop on expiry or a terminal failure.
 - `ACTIVATE`: run `setup continue <job-id>` to decrypt the delivered key locally and activate the profile.
 - `RECOVER`: report completed and failed steps. Any replacement mutation requires a new management session and approval.
-- `DONE`: run `node <skill-directory>/../../runtime/status.cjs`, then verify one harmless host tool call after the user enables and trusts the hook.
+- `DONE`: `setup continue` already reports the new agent's `agentStatus`. Report setup as finished only when `nextAction` is `DONE` and `agentStatus.state` is `ready`. A session `status` of `completed` alone does not mean the profile is active. Do not run another command to check status: from this point every tool call is judged under the new agent's policy, and a blocked call can jail the agent. To confirm enforcement, make one harmless call that fits the agent's stated purpose.
 
 For a new public setup, the plan normally contains `create_account` when missing, `create_organization` when missing, `activate_free_plan` when no subscription exists, then `create_agent` with `keySource: "generate_in_browser"`. Use only values the user supplied or explicitly chose. Do not invent organization names, purposes, risks, or agent names.
 
@@ -49,6 +51,8 @@ List profiles with `profile list --host codex`, select one with `profile switch 
 
 If there is no selected profile, the hook keeps the legacy SDK configuration behavior. If `ATBASH_AGENT_KEY` or `ATBASH_ORG_NAME` conflicts with a selected profile, report the conflict and ask the user to remove or correct the override locally. Never inspect the conflicting key.
 
-The hook remains fail closed throughout setup. If an already-trusted unconfigured hook blocks the helper, explain the actual block and the minimum user action needed to unblock setup; do not disable or bypass the hook yourself. Offer running the launcher outside the guarded task only when this block has actually occurred, then resume the job yourself.
+Setup runs with the hook trusted; do not ask the user to disable the plugin, which also removes this skill. While no configuration exists at all, the hook allows the setup steps above and denies everything else.
+
+If the hook denies a setup step because a configuration already exists (invalid, jailed, or not registered), setup mode does not apply — report the exact denial and tell the user they can disconnect the current profile from their own terminal with `node "<skill-directory>/scripts/atbash-control.mjs" profile disconnect --host codex`, then start setup again. Do not describe this as bypassing an individual verdict.
 
 If the API fails, report the failing step and the returned error. A backend error is not a reason to hand the same command to the user or ask them to supply backend credentials. Do not repeatedly create sessions or claim that a manual command will fix a server failure.

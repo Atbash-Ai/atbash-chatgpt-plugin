@@ -7,7 +7,9 @@ export function makeHookInput(overrides: Partial<PreToolUseInput> = {}): PreTool
     model: "gpt-test",
     permission_mode: "default",
     session_id: "session-test",
-    tool_input: { cmd: "git status --short" },
+    // `command`, not `cmd`: captured from Codex 0.160.0, which sends
+    // {"command":"git status"} for every shell, file-read and file-write call.
+    tool_input: { command: "git status --short" },
     tool_name: "Bash",
     tool_use_id: "tool-use-test",
     transcript_path: null,

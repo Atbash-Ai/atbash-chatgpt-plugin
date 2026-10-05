@@ -16,6 +16,8 @@ Open the Plugins Directory in Codex, choose the Atbash AI marketplace, and insta
 
 Invoke `$atbash-setup` in Codex. The skill starts a short-lived onboarding session and provides a Connect Atbash link. Sign in and verify your wallet in the browser, then review and approve the exact account, organization, plan, and agent changes. The helper finishes setup and saves the agent key locally under `~/.config/atbash/` with restricted permissions. For an existing agent, it opens a local form for the key; the key is not sent to the dashboard or chat.
 
+Setup works with the hook trusted. Until an agent is configured, the hook allows only the Atbash setup steps — the helper commands and the plan file written under `~/.config/atbash/plans/` — and denies every other tool call. Once setup activates a profile, every tool call is judged again; `setup continue` reports the new agent's status itself, so no extra judged call is needed. An existing but invalid configuration stays fail closed.
+
 Use `$atbash-manage` for later changes. Each change requires a fresh browser authorization.
 
 ## Activate the Codex hook
@@ -26,7 +28,7 @@ On Codex 0.154 or newer, installing the plugin alone does not register its hook.
 node plugins/atbash/runtime/install-hook.cjs
 ```
 
-Run `$atbash-setup` before trusting the hook, because an unconfigured hook denies tool calls. Restart Codex, open `/hooks`, and trust the Atbash `PreToolUse` hook. Then check status:
+Restart Codex, open `/hooks`, and trust the Atbash `PreToolUse` hook. Then check status:
 
 ```bash
 node plugins/atbash/runtime/status.cjs
