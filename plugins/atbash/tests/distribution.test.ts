@@ -3,6 +3,7 @@ import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import test from "node:test";
+import { createRequire } from "node:module";
 
 import { makeHookInput } from "./fixtures.js";
 
@@ -88,4 +89,25 @@ test("marketplace package includes the setup skill", () => {
   assert.match(skill, /^---\r?\nname: atbash-setup\r?\n/);
   assert.doesNotMatch(skill, /\[TODO:/);
   assert.match(skillInterface, /\$atbash-setup/);
+});
+
+test("production runtime uses the pinned stable SDK endpoint and both chain defaults", () => {
+  const require = createRequire(import.meta.url);
+  const loader = require(`${process.cwd()}/runtime/atbash-native.cjs`);
+  const native = require(
+    `${process.cwd()}/runtime/native/${process.platform}-${process.arch}/atbash.node`,
+  );
+  const sdk = JSON.parse(readFileSync("package.json", "utf8")).dependencies["@atbash/sdk"];
+  assert.equal(sdk, "0.9.2");
+  assert.equal(loader.DEFAULT_ENDPOINT, "https://atbash.ai");
+  for (const key of [
+    "DEFAULT_ENDPOINT",
+    "DEFAULT_BLOCKCHAIN_RID",
+    "DEFAULT_PRIVATE_BLOCKCHAIN_RID",
+  ]) {
+    assert.equal(loader[key], native[key], key);
+  }
+  assert.deepEqual(loader.defaultChromiaNodeUrls(), native.defaultChromiaNodeUrls());
+  assert.deepEqual(loader.defaultPrivateNodeUrls(), native.defaultPrivateNodeUrls());
+  assert.equal(existsSync("runtime/install-hook.cjs"), true);
 });

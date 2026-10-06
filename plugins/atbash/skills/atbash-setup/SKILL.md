@@ -5,7 +5,7 @@ description: Configure, activate, verify, troubleshoot, or rotate credentials fo
 
 # Atbash Setup
 
-Keep Atbash enforcement separate from this skill. The plugin's catch-all `PreToolUse` hook automatically judges supported tool calls whenever the plugin and hook are enabled and trusted; do not decide case by case whether to invoke Atbash.
+Keep Atbash enforcement separate from this skill. The catch-all `PreToolUse` hook automatically judges supported tool calls whenever it is registered, enabled, and trusted; do not decide case by case whether to invoke Atbash.
 
 ## Protect credentials
 
@@ -50,16 +50,29 @@ Environment variables `ATBASH_AGENT_KEY` and `ATBASH_ORG_NAME` are a session-onl
 
 If the already-trusted fail-closed hook prevents setup actions, tell the user to disable or untrust the Atbash hook, complete configuration manually outside Codex, restart Codex, and trust the hook again through `/hooks`.
 
+## Register the local hook
+
+After configuration, run the bundled `runtime/install-hook.cjs --dry-run` from the plugin directory to show the registration, then run `runtime/install-hook.cjs` with Node to register it. Use the actual installed plugin path; never guess a cache version. The default scope writes the user-level Codex hooks file while preserving other hooks. `--scope project` registers only in the current project directory. Restart Codex and ask the user to trust the hook through `/hooks`.
+
+For a repository checkout, the commands are:
+
+```bash
+node plugins/atbash/runtime/install-hook.cjs --dry-run
+node plugins/atbash/runtime/install-hook.cjs
+```
+
+Run the bundled `runtime/status.cjs` after registration. Treat enforcement as registered only when `hookRegistration.inspected` and `hookRegistration.enforcing` are true and `hookRegistration.degraded` is zero; hook trust still requires the user's action in Codex.
+
 ## Activate or deactivate
 
 Treat Atbash as active only when all of these are true:
 
 1. The `atbash` plugin is installed and enabled.
-2. Codex lifecycle hooks are enabled.
+2. Codex lifecycle hooks are enabled and the local hook is registered.
 3. The Atbash `PreToolUse` command is trusted in `/hooks`.
 4. Local Atbash credentials and organization configuration are valid.
 
-To deactivate Atbash, tell the user to disable the plugin or untrust/disable its hook in Codex. Do not describe deactivation as bypassing an individual verdict; it disables enforcement for subsequent tool calls.
+To deactivate Atbash, tell the user to untrust/disable its hook in Codex, or run the installer with `--uninstall` and restart Codex. Disabling the plugin alone does not remove a separately registered hook. Do not describe deactivation as bypassing an individual verdict; it disables enforcement for subsequent tool calls.
 
 ## Verify and troubleshoot
 

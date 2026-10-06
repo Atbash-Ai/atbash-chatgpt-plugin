@@ -1,6 +1,6 @@
 # Atbash Safety for ChatGPT and Codex
 
-Atbash Safety evaluates supported Codex tool calls against your Atbash agent's policy before execution. This repository distributes the complete local plugin: a `PreToolUse` hook, the production npm SDK `@atbash/sdk@0.7.1`, native binaries, and an `atbash-setup` skill. It has no MCP server.
+Atbash Safety evaluates supported Codex tool calls against your Atbash agent's policy before execution. This repository distributes the complete local plugin: a `PreToolUse` hook, the production npm SDK `@atbash/sdk@0.9.2`, native binaries, and an `atbash-setup` skill. It has no MCP server.
 
 Only `allow: true` with verdict `ALLOW` permits the pending call. `HOLD`, `BLOCK`, invalid configuration, timeout, and service errors deny that attempt. Coverage is limited to tools exposed to the host's `PreToolUse` hook; plain text responses and tools outside that lifecycle are not covered.
 
@@ -15,6 +15,25 @@ codex plugin marketplace add Atbash-Ai/atbash-chatgpt-plugin --ref main
 ```
 
 Then open the Plugins Directory in the desktop app, select the Atbash AI marketplace, and install Atbash Safety. If you already registered another marketplace named `atbash-ai`, choose the source that points to this repository. Configure credentials before enabling and trusting its hook. Review the Atbash hook through `/hooks` and start a new task after installation.
+
+## Register the local Codex hook
+
+For Codex versions that do not load plugin-bundled hooks, run the installer from this checkout after configuring Atbash:
+
+```bash
+node plugins/atbash/runtime/install-hook.cjs --dry-run
+node plugins/atbash/runtime/install-hook.cjs
+```
+
+From an installed plugin, use its corresponding `runtime/install-hook.cjs` path. The installer registers the local runtime in the user-level Codex hooks file and preserves other hooks. Restart Codex, open `/hooks`, and trust the Atbash `PreToolUse` command. Plugin enablement alone does not control this separately registered hook. To remove it, run the same installer with `--uninstall`, then restart Codex.
+
+Use `--scope project` to register only in the current project's `.codex/hooks.json`; Codex must start in that exact project directory. The status command checks both agent readiness and hook registration:
+
+```bash
+node plugins/atbash/runtime/status.cjs
+```
+
+The release uses the production SDK defaults for the endpoint, chain IDs, and nodes, with no development deployment overrides. Existing local configuration can override those defaults.
 
 ## Configure your agent locally
 
@@ -31,7 +50,7 @@ Protect the directory and file with permissions `700` and `600` on macOS/Linux. 
 
 The SDK uses the key locally for identity and signing. The hook calls `auditToolCall()` with the tool name, arguments, and limited execution context. The SDK handles redaction and communication with Atbash. Network access to Atbash and the configured chain services must be available in the hook's execution environment.
 
-Try: “Run pwd, then list the files in this repository.” The setup skill can explain activation, status results, and key rotation. Disabling the plugin or its hook deactivates enforcement for later calls.
+Try: “Run pwd, then list the files in this repository.” The setup skill can explain activation, status results, and key rotation. Untrusting or disabling the hook deactivates enforcement for later calls; disabling the plugin alone does not remove a separately registered hook.
 
 ## Source and distribution
 
@@ -56,7 +75,7 @@ npm run build:marketplace
 npm run package:submission
 ```
 
-The last command generates a full plugin ZIP, a separate setup-skill ZIP, and a manifest with the Git commit, SDK version, and archive hashes under `artifacts/`. Packaging requires the `zip` command (macOS/Linux; CI uses Ubuntu). The full ZIP includes the hook and runtime. The setup-only ZIP contains instructions and does not provide automatic enforcement.
+The last command generates a full plugin ZIP, a separate setup-skill ZIP, and a manifest with the Git commit, SDK version, and archive hashes under `artifacts/`. Packaging requires the `zip` command (macOS/Linux; CI uses Ubuntu). The full ZIP includes the hook runtime and local installer, without embedded hook registration. Users register enforcement explicitly after installation. The setup-only ZIP contains instructions and does not provide automatic enforcement.
 
 For a live read-only status check after configuring your own agent:
 

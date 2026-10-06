@@ -24,7 +24,9 @@ try {
   await mkdir(output, { recursive: true });
   const full = join(staging, "plugin");
   await mkdir(full);
-  const included = [".codex-plugin", "assets", "hooks", "runtime", "skills"];
+  // The marketplace rejects embedded lifecycle hooks. Ship the runtime and local
+  // installer; registration happens explicitly after installation.
+  const included = [".codex-plugin", "assets", "runtime", "skills"];
   for (const entry of included)
     await cp(join(plugin, entry), join(full, entry), { recursive: true });
   const archives = [

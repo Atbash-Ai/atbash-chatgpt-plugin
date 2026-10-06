@@ -1,6 +1,6 @@
 {
   "name": "atbash",
-  "version": "0.3.3",
+  "version": "0.3.4",
   "description": "Automatically guards supported Codex tool calls with Atbash safety judgments and provides secure local setup guidance.",
   "author": {
     "name": "Atbash AI",
@@ -10,7 +10,6 @@
   "repository": "https://github.com/Atbash-Ai/atbash-chatgpt-plugin",
   "keywords": ["atbash", "codex", "safety", "policy", "guardrails"],
   "skills": "./skills/",
-  "hooks": "./hooks/hooks.json",
   "interface": {
     "displayName": "Atbash Safety",
     "shortDescription": "Guard tool calls with Atbash",

@@ -1,5 +1,5 @@
 import { build } from "esbuild";
-import { readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, copyFile, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
 export const nativePackages = {
@@ -18,7 +18,8 @@ export async function bundleAtbash(outdir, { minify = false, sourcemap = true } 
     bundle: true,
     entryPoints: {
       index: "src/index.ts",
-      "pre-tool-use": "src/pre-tool-use.ts",
+      "pre-tool-use-main": "src/pre-tool-use.ts",
+      "install-hook": "src/install-hook.ts",
       status: "src/status.ts",
     },
     format: "cjs",
@@ -54,10 +55,20 @@ export async function bundleAtbash(outdir, { minify = false, sourcemap = true } 
     target: "node22",
   });
 
-  for (const entry of ["index", "pre-tool-use", "status"]) {
+  for (const entry of ["index", "pre-tool-use-main", "status", "install-hook"]) {
     const outputPath = join(outdir, `${entry}.cjs`);
     const source = await readFile(outputPath, "utf8");
     await writeFile(outputPath, source.replaceAll("\t", "  "), "utf8");
+  }
+  await copyFile("src/hook/shim.cjs", join(outdir, "pre-tool-use.cjs"));
+  for (const [entry, mode] of [
+    ["index", 0o644],
+    ["pre-tool-use", 0o644],
+    ["pre-tool-use-main", 0o755],
+    ["status", 0o755],
+    ["install-hook", 0o755],
+  ]) {
+    await chmod(join(outdir, `${entry}.cjs`), mode);
   }
 }
 
