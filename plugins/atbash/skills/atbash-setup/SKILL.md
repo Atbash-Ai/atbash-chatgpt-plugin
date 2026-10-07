@@ -35,6 +35,8 @@ Inspect progress with `setup inspect <job-id>` through the same launcher. Follow
 - `RECOVER`: report completed and failed steps. Any replacement mutation requires a new management session and approval.
 - `DONE`: run `node <skill-directory>/../../runtime/status.cjs`, then verify one harmless host tool call after the user enables and trusts the hook.
 
+To enforce, the hook must be registered with `node <skill-directory>/../../runtime/install-hook.cjs`. The plugin's bundled `hooks/hooks.json` entry runs a bare `node` and a `PLUGIN_ROOT` placeholder: it depends on `node` being on the host's PATH and on `PLUGIN_ROOT` being exported by the host, so it is not a gate on its own.
+
 For a new public setup, the plan normally contains `create_account` when missing, `create_organization` when missing, `activate_free_plan` when no subscription exists, then `create_agent` with `keySource: "generate_in_browser"`. Use only values the user supplied or explicitly chose. Do not invent organization names, purposes, risks, or agent names.
 
 ## Connect an existing agent
