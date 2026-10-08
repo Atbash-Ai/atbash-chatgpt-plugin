@@ -6,7 +6,7 @@
     "name": "Atbash AI",
     "url": "https://atbash.ai"
   },
-  "homepage": "https://atbash.ai",
+  "homepage": "https://www.atbash.ai/risk-engine",
   "repository": "https://github.com/Atbash-Ai/atbash-chatgpt-plugin",
   "keywords": ["atbash", "codex", "safety", "policy", "guardrails"],
   "skills": "./skills/",
@@ -19,6 +19,10 @@
     "logo": "./assets/atbash-icon.png",
     "composerIcon": "./assets/atbash-icon.png",
     "capabilities": ["Safety policy enforcement", "Local credential setup"],
+    "websiteURL": "https://www.atbash.ai/risk-engine",
+    "supportURL": "https://www.atbash.ai/",
+    "privacyPolicyURL": "https://www.atbash.ai/privacy",
+    "termsOfServiceURL": "https://www.atbash.ai/terms",
     "defaultPrompt": [
       "Use $atbash-setup to configure Atbash without sharing my private key.",
       "Verify that Atbash safety is active for this task."

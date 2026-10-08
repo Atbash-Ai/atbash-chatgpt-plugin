@@ -6,12 +6,22 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { checkPublicLinks } from "./check-public-links.mjs";
+
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const plugin = join(root, "plugins/atbash");
 const metadata = JSON.parse(await readFile(join(plugin, "package.json"), "utf8"));
 const runtime = JSON.parse(await readFile(join(plugin, "runtime/manifest.json"), "utf8"));
+const pluginManifest = JSON.parse(
+  await readFile(join(plugin, ".codex-plugin/plugin.json"), "utf8"),
+);
 if (runtime.sdkVersion !== metadata.dependencies["@atbash/sdk"]) {
   throw new Error("Runtime SDK differs from the pinned dependency. Rebuild before packaging.");
+}
+console.log("Checking public website, support, privacy policy, and terms links...");
+const publicLinkChecks = await checkPublicLinks(pluginManifest.interface);
+for (const check of publicLinkChecks.results) {
+  console.log(`${check.field}: HTTP ${check.status} ${check.finalUrl}`);
 }
 const output = join(root, "artifacts");
 const staging = await mkdtemp(join(tmpdir(), "atbash-submission-"));
@@ -58,6 +68,7 @@ try {
     workingTreeDirty: dirty.status !== 0 || dirty.stdout.trim() !== "",
     pluginVersion: metadata.version,
     sdkVersion: runtime.sdkVersion,
+    publicLinkChecks,
     files,
   };
   await writeFile(

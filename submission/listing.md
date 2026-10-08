@@ -8,10 +8,10 @@
 - Developer: `Atbash AI`
 - Category: `Security`
 - Short description: `Guard tool calls with Atbash`
-- Website: `https://www.atbash.ai/`
-- Support: pending approved public URL
-- Privacy policy: pending approved public URL
-- Terms: pending approved public URL
+- Website: [https://www.atbash.ai/risk-engine](https://www.atbash.ai/risk-engine)
+- Support: [https://www.atbash.ai/](https://www.atbash.ai/)
+- Privacy policy: [https://www.atbash.ai/privacy](https://www.atbash.ai/privacy)
+- Terms of service: [https://www.atbash.ai/terms](https://www.atbash.ai/terms)
 - Logo: `plugins/atbash/assets/atbash-icon.png`
 
 ## Long description

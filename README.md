@@ -75,7 +75,7 @@ npm run build:marketplace
 npm run package:submission
 ```
 
-The last command generates a full plugin ZIP, a separate setup-skill ZIP, and a manifest with the Git commit, SDK version, and archive hashes under `artifacts/`. Packaging requires the `zip` command (macOS/Linux; CI uses Ubuntu). The full ZIP includes the hook runtime and local installer, without embedded hook registration. Users register enforcement explicitly after installation. The setup-only ZIP contains instructions and does not provide automatic enforcement.
+The last command checks that the public website, support, privacy policy, and terms URLs are reachable over HTTPS, then generates a full plugin ZIP, a separate setup-skill ZIP, and a manifest with the link check results, Git commit, SDK version, and archive hashes under `artifacts/`. Packaging requires network access and the `zip` command (macOS/Linux; CI uses Ubuntu). The full ZIP includes the listing URLs, hook runtime and local installer, without embedded hook registration. Users register enforcement explicitly after installation. The setup-only ZIP contains instructions and does not provide automatic enforcement.
 
 For a live read-only status check after configuring your own agent:
 
