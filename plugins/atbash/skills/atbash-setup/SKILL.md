@@ -29,6 +29,7 @@ Inspect progress with `setup inspect <job-id>` through the same launcher. Follow
 
 - `OPEN_BROWSER`: the user completes sign-in and wallet verification in the provided page.
 - `PREPARE_PLAN`: use discovery to determine what exists. Ask for any missing names or choices, create the non-secret plan JSON file containing only `actions` yourself, then run `setup plan <job-id> --input <path>`. Do not ask the user to write JSON or run the command.
+- If the organization has no active subscription, run `setup checkout <job-id> --organization <name>`. Show the returned `checkoutUrl` and ask the user to choose a plan in the dashboard's existing checkout flow. Resume inspection after the dashboard returns to `returnUrl`; never select paid plans or handle payment details yourself.
 - `REVIEW_IN_BROWSER`: the user reviews and signs the exact proposal in Connect Atbash. Do not approve it for them.
 - `WAIT`: inspect again after the returned poll interval, or after two seconds if none is present. Keep the user informed during longer waits; stop on expiry or a terminal failure.
 - `ACTIVATE`: run `setup continue <job-id>` to decrypt the delivered key locally and activate the profile.

@@ -44,6 +44,14 @@ export interface SessionView {
   expiresAt: string;
 }
 
+export interface CheckoutHandoff {
+  organization: string;
+  network: ControlNetwork;
+  checkoutUrl: string;
+  returnUrl: string;
+  expiresAt: string;
+}
+
 export interface SetupInventory {
   authoritative: boolean;
   setupState:
