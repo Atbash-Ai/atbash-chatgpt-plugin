@@ -10,7 +10,11 @@ const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const plugin = join(root, "plugins/atbash");
 const metadata = JSON.parse(await readFile(join(plugin, "package.json"), "utf8"));
 const runtime = JSON.parse(await readFile(join(plugin, "runtime/manifest.json"), "utf8"));
-if (runtime.sdkVersion !== metadata.dependencies["@atbash/sdk"]) {
+const environments = JSON.parse(await readFile(join(plugin, "build-environments.json"), "utf8"));
+// The runtime is checked against the SDK pinned for the environment it was built for.
+const sdkPackage = environments[runtime.environment]?.sdkPackage;
+const pinned = metadata.dependencies?.[sdkPackage] ?? metadata.devDependencies?.[sdkPackage] ?? "";
+if (sdkPackage === undefined || runtime.sdkVersion !== pinned.replace(/^npm:@atbash\/sdk@/, "")) {
   throw new Error("Runtime SDK differs from the pinned dependency. Rebuild before packaging.");
 }
 const output = join(root, "artifacts");
@@ -55,6 +59,7 @@ try {
     sourceCommit: head.status === 0 ? head.stdout.trim() : null,
     workingTreeDirty: dirty.status !== 0 || dirty.stdout.trim() !== "",
     pluginVersion: metadata.version,
+    environment: runtime.environment,
     sdkVersion: runtime.sdkVersion,
     files,
   };

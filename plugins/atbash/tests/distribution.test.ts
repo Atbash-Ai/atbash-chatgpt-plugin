@@ -1,10 +1,49 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
+import { join } from "node:path";
 import test from "node:test";
 
 import { makeHookInput } from "./fixtures.js";
+
+interface BuildEnvironment {
+  sdkPackage: string;
+  endpoint?: string;
+  chains?: Record<"public" | "private", { blockchainRid: string; nodeUrls: string[] }>;
+}
+
+interface RuntimeManifest {
+  environment?: string;
+  sdkVersion?: string;
+  platforms?: Record<string, { package?: string; sha256?: string }>;
+}
+
+const PRODUCTION_ENDPOINT = "https://atbash.ai";
+const environments = JSON.parse(readFileSync("build-environments.json", "utf8")) as Record<
+  string,
+  BuildEnvironment
+>;
+
+function runtimeManifest(): { manifest: RuntimeManifest; environment: BuildEnvironment } {
+  const manifest = JSON.parse(readFileSync("runtime/manifest.json", "utf8")) as RuntimeManifest;
+  const environment = environments[manifest.environment ?? ""];
+  assert.ok(environment, `runtime/manifest.json names an unknown environment`);
+  return { manifest, environment };
+}
+
+/** The endpoint and pinned chains a build must target: runtime/ per its manifest, dist/ per the test build. */
+function expectedTarget(directory: "dist" | "runtime"): {
+  endpoint: string;
+  chains: BuildEnvironment["chains"];
+} {
+  const environment =
+    directory === "runtime"
+      ? runtimeManifest().environment
+      : environments[process.env.ATBASH_BUILD_ENV?.trim() || "prod"];
+  assert.ok(environment, `${directory} was built for an unknown environment`);
+  return { endpoint: environment.endpoint ?? PRODUCTION_ENDPOINT, chains: environment.chains };
+}
 
 test("built hook is self-contained and fails closed", () => {
   assert.equal(existsSync(`dist/native/${process.platform}-${process.arch}/atbash.node`), true);
@@ -34,13 +73,14 @@ test("marketplace runtime includes every supported native target", () => {
   const platforms = ["darwin-arm64", "linux-arm64", "linux-x64", "win32-x64"] as const;
   const packageJson = JSON.parse(readFileSync("package.json", "utf8")) as {
     dependencies?: Record<string, string>;
+    devDependencies?: Record<string, string>;
   };
-  const manifest = JSON.parse(readFileSync("runtime/manifest.json", "utf8")) as {
-    sdkVersion?: string;
-    platforms?: Record<string, { package?: string; sha256?: string }>;
-  };
+  const { manifest, environment } = runtimeManifest();
+  const pinned =
+    packageJson.dependencies?.[environment.sdkPackage] ??
+    packageJson.devDependencies?.[environment.sdkPackage];
 
-  assert.equal(manifest.sdkVersion, packageJson.dependencies?.["@atbash/sdk"]);
+  assert.equal(manifest.sdkVersion, pinned?.replace(/^npm:@atbash\/sdk@/, ""));
   assert.equal(existsSync("runtime/licenses/atbash-sdk.LICENSE"), true);
   assert.equal(existsSync("runtime/control.cjs"), true);
 
@@ -119,6 +159,50 @@ test("marketplace runtime ships every entry point with the mode the build sets",
   assert.doesNotMatch(readFileSync("runtime/pre-tool-use.cjs", "utf8"), /^#!/);
 });
 
+test("marketplace runtime targets the environment recorded in its manifest", () => {
+  const { manifest, environment } = runtimeManifest();
+  const result = spawnSync(
+    process.execPath,
+    [
+      "-e",
+      `const n = require("./runtime/atbash-native.cjs");
+      process.stdout.write(JSON.stringify({
+        endpoint: n.DEFAULT_ENDPOINT,
+        public: { blockchainRid: n.DEFAULT_BLOCKCHAIN_RID, nodeUrls: n.defaultChromiaNodeUrls() },
+        private: { blockchainRid: n.DEFAULT_PRIVATE_BLOCKCHAIN_RID, nodeUrls: n.defaultPrivateNodeUrls() },
+      }));`,
+    ],
+    { cwd: process.cwd(), encoding: "utf8" },
+  );
+  assert.equal(result.status, 0, result.stderr);
+  const actual = JSON.parse(result.stdout) as { endpoint: string } & BuildEnvironment["chains"];
+
+  if (environment.endpoint !== undefined) {
+    assert.deepEqual(actual, { endpoint: environment.endpoint, ...environment.chains });
+    return;
+  }
+
+  // Production keeps the SDK's own defaults and carries no other environment's values.
+  assert.equal(manifest.environment, "prod");
+  assert.equal(actual.endpoint, PRODUCTION_ENDPOINT);
+  const bundles = readdirSync("runtime")
+    .filter((name) => name.endsWith(".cjs"))
+    .map((name) => readFileSync(join("runtime", name), "utf8").toLowerCase());
+  for (const [name, other] of Object.entries(environments)) {
+    if (other.endpoint === undefined) continue;
+    const pinned = [
+      new URL(other.endpoint).hostname,
+      other.chains?.public.blockchainRid,
+      other.chains?.private.blockchainRid,
+    ];
+    for (const value of pinned) {
+      assert.ok(value);
+      for (const bundle of bundles)
+        assert.doesNotMatch(bundle, new RegExp(value.toLowerCase()), name);
+    }
+  }
+});
+
 test("marketplace package includes the setup and management skills", () => {
   const packageJson = JSON.parse(readFileSync("package.json", "utf8")) as {
     files?: string[];
@@ -148,4 +232,113 @@ test("setup helper delegates to the bundled control runtime", () => {
   const launcher = readFileSync("skills/atbash-setup/scripts/atbash-control.mjs", "utf8");
   assert.match(launcher, /spawn\(process\.execPath/);
   assert.match(launcher, /runtime\/control\.cjs/);
+});
+
+test("bundled SDK trusts its environment's judge while rejecting other hosts and plaintext", () => {
+  for (const directory of ["dist", "runtime"] as const) {
+    const { endpoint } = expectedTarget(directory);
+    const result = spawnSync(
+      process.execPath,
+      [
+        "-e",
+        `
+        const assert = require('node:assert/strict');
+        const { createAtbashGuard } = require('./${directory}/index.cjs');
+        const endpoint = ${JSON.stringify(endpoint)};
+        const host = new URL(endpoint).host;
+        process.env.ATBASH_ENDPOINT = endpoint;
+        assert.equal(createAtbashGuard().endpoint, endpoint);
+        process.env.ATBASH_ENDPOINT = 'https://untrusted.example';
+        assert.throws(() => createAtbashGuard(), /not in the trusted allowlist/);
+        process.env.ATBASH_ENDPOINT = 'http://' + host;
+        assert.throws(() => createAtbashGuard(), /must use https/);
+        process.env.ATBASH_ENDPOINT = 'https://user:password@' + host;
+        assert.throws(() => createAtbashGuard(), /must not contain credentials/);
+        `,
+      ],
+      {
+        cwd: process.cwd(),
+        encoding: "utf8",
+        env: {
+          ...process.env,
+          ATBASH_CONFIG_DIR: `${process.cwd()}/dist-tests/unused-endpoint-test-home`,
+          ATBASH_AGENT_KEY: "01".repeat(32),
+          ATBASH_ORG_NAME: "endpoint-test",
+          ATBASH_ENDPOINT: "",
+          ATBASH_JUDGE_VERIFY_PUBKEY: "",
+          ATBASH_DEFAULT_CHAIN_NETWORK: "",
+          ATBASH_TELEMETRY_DISABLED: "true",
+          ATBASH_CODEX_TIMEOUT_MS: "30000",
+        },
+      },
+    );
+    assert.equal(result.status, 0, `${directory}: ${result.stderr}`);
+  }
+});
+
+test("bundled SDK uses its environment's BRIDs and node pools for defaults and organization routing", () => {
+  for (const directory of ["dist", "runtime"] as const) {
+    const { endpoint, chains } = expectedTarget(directory);
+    const result = spawnSync(
+      process.execPath,
+      [
+        "-e",
+        `
+        const assert = require('node:assert/strict');
+        const { createAtbashGuard } = require('./${directory}/index.cjs');
+        const native = require('./${directory}/atbash-native.cjs');
+        // Production pins nothing, so it must route with the SDK's own defaults.
+        const expected = ${JSON.stringify(chains ?? null)} ?? {
+          public: { blockchainRid: native.DEFAULT_BLOCKCHAIN_RID, nodeUrls: native.defaultChromiaNodeUrls() },
+          private: { blockchainRid: native.DEFAULT_PRIVATE_BLOCKCHAIN_RID, nodeUrls: native.defaultPrivateNodeUrls() },
+        };
+        const chains = {
+          public: { network: 'public', ...expected.public },
+          private: { network: 'private', ...expected.private },
+        };
+        (async () => {
+          for (const network of ['public', 'private']) {
+            process.env.ATBASH_DEFAULT_CHAIN_NETWORK = network;
+            const client = createAtbashGuard();
+            assert.equal(client.blockchainRid, chains[network].blockchainRid);
+            assert.deepEqual(client.nodeUrls, chains[network].nodeUrls);
+          }
+          delete process.env.ATBASH_DEFAULT_CHAIN_NETWORK;
+          let requests = 0;
+          global.fetch = async (input) => {
+            const url = new URL(typeof input === 'string' || input instanceof URL ? input : input.url);
+            assert.equal(url.origin, new URL(${JSON.stringify(endpoint)}).origin);
+            assert.equal(url.pathname, '/api/org-network');
+            const network = url.searchParams.get('org');
+            assert.ok(network === 'public' || network === 'private');
+            requests++;
+            return new Response(JSON.stringify({ network }), { status: 200 });
+          };
+          const client = createAtbashGuard();
+          for (const network of ['public', 'private']) {
+            assert.deepEqual(await client.resolveChainForOrg(network), chains[network]);
+          }
+          assert.equal(requests, 2);
+        })().catch(error => { console.error(error); process.exitCode = 1; });
+        `,
+      ],
+      {
+        cwd: process.cwd(),
+        encoding: "utf8",
+        timeout: 10_000,
+        env: {
+          ...process.env,
+          ATBASH_CONFIG_DIR: `${process.cwd()}/dist-tests/unused-chain-test-home`,
+          ATBASH_AGENT_KEY: "01".repeat(32),
+          ATBASH_ORG_NAME: "chain-test",
+          ATBASH_ENDPOINT: "",
+          ATBASH_JUDGE_VERIFY_PUBKEY: "",
+          ATBASH_DEFAULT_CHAIN_NETWORK: "",
+          ATBASH_TELEMETRY_DISABLED: "true",
+          ATBASH_CODEX_TIMEOUT_MS: "30000",
+        },
+      },
+    );
+    assert.equal(result.status, 0, `${directory}: ${result.stderr}`);
+  }
 });
