@@ -67,6 +67,8 @@ Invoke `$atbash-setup` in Codex. The skill starts a short-lived onboarding sessi
 
 The Connect Atbash URL must be on the service of the installed environment (see [Environments](#environments)). If it is not, the installed snapshot is not the one you expect.
 
+Each new agent starts with a policy preset (Developer, DevOps, or Full baseline). Codex suggests one from the agent's purpose, and you can switch it or customize individual rules on the Connect Atbash review page before approving. It is created as the organization policy "<agent name> Policy" and can be fine-tuned later under Policies in the dashboard.
+
 Use `$atbash-manage` for later changes. Each change requires a fresh browser authorization.
 
 ## Activate the Codex hook
