@@ -31,13 +31,18 @@ Inspect progress with `setup inspect <job-id>` through the same launcher. Follow
 
 - `OPEN_BROWSER`: the user completes sign-in and wallet verification in the provided page.
 - `PREPARE_PLAN`: use discovery to determine what exists. Ask for any missing names or choices, then build a non-secret plan JSON containing only `actions` yourself and pass it to the launcher inline, as one single-quoted argument: `setup plan <job-id> --json '{"actions":[...]}'`. Do not write it to a file first — writing a file means running a shell command, which setup mode does not allow. Do not ask the user to write JSON or run the command.
+- If the organization has no active subscription, run `setup checkout <job-id> --organization <name>`. Show the returned `checkoutUrl` and ask the user to choose a plan in the dashboard's existing checkout flow. Resume inspection after the dashboard returns to `returnUrl`; never select paid plans or handle payment details yourself.
 - `REVIEW_IN_BROWSER`: the user reviews and signs the exact proposal in Connect Atbash. Do not approve it for them.
 - `WAIT`: inspect again after the returned poll interval, or after two seconds if none is present. Keep the user informed during longer waits; stop on expiry or a terminal failure.
 - `ACTIVATE`: run `setup continue <job-id>` to decrypt the delivered key locally and activate the profile.
 - `RECOVER`: report completed and failed steps. Any replacement mutation requires a new management session and approval.
 - `DONE`: `setup continue` already reports the new agent's `agentStatus`. Report setup as finished only when `nextAction` is `DONE` and `agentStatus.state` is `ready`. A session `status` of `completed` alone does not mean the profile is active. Do not run another command to check status: from this point every tool call is judged under the new agent's policy, and a blocked call can jail the agent. To confirm enforcement, make one harmless call that fits the agent's stated purpose.
 
+To enforce, the hook must be registered with `node <skill-directory>/../../runtime/install-hook.cjs`. The plugin's bundled `hooks/hooks.json` entry runs a bare `node` and a `PLUGIN_ROOT` placeholder: it depends on `node` being on the host's PATH and on `PLUGIN_ROOT` being exported by the host, so it is not a gate on its own.
+
 For a new public setup, the plan normally contains `create_account` when missing, `create_organization` when missing, `activate_free_plan` when no subscription exists, then `create_agent` with `keySource: "generate_in_browser"`. Use only values the user supplied or explicitly chose. Do not invent organization names, purposes, risks, or agent names.
+
+Give every new agent a starting policy by adding `"policy": { "preset": "<preset>", "version": 1 }` to its `create_agent` action. Choose the preset from the agent's purpose: `developer` for coding work (the usual choice for Codex), `devops` for infrastructure, deployment, or operations work, and `full_baseline` when the user asks for the strictest protection. Tell the user which preset you suggested and that they can switch it or customize individual rules on the Connect Atbash review page before approving; the policy they approve is created as the organization policy "<agent name> Policy" and can be fine-tuned later under Policies in the dashboard. If the user wants a different preset before review, resubmit the plan with it.
 
 ## Connect an existing agent
 

@@ -1,6 +1,7 @@
 import {
   cancelControlJob,
   continueControlJob,
+  getCheckoutHandoff,
   inspectControlJob,
   startControlJob,
   submitControlPlan,
@@ -57,6 +58,11 @@ export async function runControl(args = process.argv.slice(2)): Promise<unknown>
   }
   if ((area === "setup" || area === "manage") && command === "continue")
     return continueControlJob(required(positional, "A job ID is required."));
+  if (area === "setup" && command === "checkout")
+    return getCheckoutHandoff(
+      required(positional, "A job ID is required."),
+      required(option(args, "--organization"), "--organization is required."),
+    );
   if ((area === "setup" || area === "manage") && command === "cancel")
     return cancelControlJob(required(positional, "A job ID is required."));
   if (area === "profile" && command === "connect") {
@@ -88,6 +94,6 @@ export async function runControl(args = process.argv.slice(2)): Promise<unknown>
     return { ok: true, host: requestedHost, disconnected: true };
   }
   throw new Error(
-    "Usage: control setup|manage start|inspect|plan|continue|cancel; profile connect|list|switch|disconnect",
+    "Usage: control setup|manage start|inspect|plan|checkout|continue|cancel; profile connect|list|switch|disconnect",
   );
 }

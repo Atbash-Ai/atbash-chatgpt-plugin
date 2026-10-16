@@ -245,6 +245,24 @@ async function submitParsedPlan(
   });
 }
 
+export async function getCheckoutHandoff(
+  jobId: string,
+  organization: string,
+  store = new ControlStore(),
+) {
+  const job = await store.readJob(jobId);
+  const client = clientFor(job);
+  const session = await client.getSession(job.sessionId, job.sessionSecret);
+  if (!session.identityBound)
+    throw new Error("Verify the wallet before opening subscription checkout.");
+  return client.getCheckoutHandoff(
+    job.sessionId,
+    job.sessionSecret,
+    organization,
+    job.verificationCode,
+  );
+}
+
 export async function activateCompletedJob(
   job: PendingJob,
   proposal: ProposalView,
