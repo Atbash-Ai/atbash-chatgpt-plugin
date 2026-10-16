@@ -59,6 +59,10 @@ test("allows the exact setup helper commands", () => {
     `node '${LAUNCHER}' setup plan ${JOB} --input ${CONFIG}/plans/${JOB}.json`,
     `node "${LAUNCHER}" setup continue ${JOB}`,
     `node "${LAUNCHER}" setup cancel ${JOB}`,
+    // The skill sends an organization with no subscription here to choose a paid
+    // plan; without it that step is denied on an unconfigured install.
+    `node "${LAUNCHER}" setup checkout ${JOB} --organization qa_org_01`,
+    `node "${LAUNCHER}" setup checkout ${JOB} --organization "Acme Labs"`,
     `node "${LAUNCHER}" profile connect ${JOB}`,
     `node "${LAUNCHER}" profile list --host codex`,
     `node "${LAUNCHER}" profile switch --host codex --profile codex-${JOB}`,

@@ -30,6 +30,7 @@ const SETUP_COMMANDS = new Set([
   "setup plan",
   "setup continue",
   "setup cancel",
+  "setup checkout",
   "profile connect",
   "profile list",
   "profile switch",
