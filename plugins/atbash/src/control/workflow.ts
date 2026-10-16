@@ -176,7 +176,14 @@ export async function inspectControlJob(
     job.executionId = execution.id;
     await store.saveJob(job);
   }
-  return view({ job, session, discovery, proposal, execution, planPath: store.planPath(job.jobId) });
+  return view({
+    job,
+    session,
+    discovery,
+    proposal,
+    execution,
+    planPath: store.planPath(job.jobId),
+  });
 }
 
 /**

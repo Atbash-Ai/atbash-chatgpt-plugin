@@ -69,7 +69,10 @@ test("allows the exact setup helper commands", () => {
   // Relative to the skill directory, which the launcher is invoked from.
   assert.equal(
     isSetupToolCall(
-      shell("node scripts/atbash-control.mjs setup start --host codex", `${ROOT}/skills/atbash-setup`),
+      shell(
+        "node scripts/atbash-control.mjs setup start --host codex",
+        `${ROOT}/skills/atbash-setup`,
+      ),
       options,
     ),
     true,
