@@ -2,6 +2,7 @@ import { DEFAULT_ENDPOINT } from "@atbash/sdk";
 import type {
   ControlHost,
   ControlPurpose,
+  CheckoutHandoff,
   CreatedSession,
   ExecutionView,
   KeyDeliveryPublicKey,
@@ -118,6 +119,32 @@ export class ControlClient {
         secret,
       ),
     ).discovery;
+  }
+
+  async getCheckoutHandoff(
+    sessionId: string,
+    secret: string,
+    organization: string,
+    verificationCode?: string,
+  ): Promise<CheckoutHandoff> {
+    const query = new URLSearchParams({ organization });
+    if (verificationCode) query.set("code", verificationCode);
+    const value = (await this.request(
+      `/api/v1/plugin/sessions/${encodeURIComponent(sessionId)}/checkout?${query.toString()}`,
+      {},
+      secret,
+    )) as CheckoutHandoff;
+    if (
+      !value ||
+      typeof value.organization !== "string" ||
+      (value.network !== "public" && value.network !== "private") ||
+      typeof value.checkoutUrl !== "string" ||
+      typeof value.returnUrl !== "string" ||
+      typeof value.expiresAt !== "string"
+    ) {
+      throw new ControlApiError("Atbash returned an invalid checkout handoff.");
+    }
+    return value;
   }
 
   async submitProposal(

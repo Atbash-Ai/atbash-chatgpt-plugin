@@ -93,6 +93,9 @@ jobs:
           }
           NODE
 
+      - name: Require a production runtime
+        run: node plugins/atbash/runtime-environment.mjs --require prod
+
       - name: Verify committed universal marketplace runtime
         run: npm run build:marketplace && git diff --exit-code -- plugins/atbash/runtime
 
