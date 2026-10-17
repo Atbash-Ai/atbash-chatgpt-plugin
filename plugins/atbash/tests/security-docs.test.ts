@@ -19,6 +19,9 @@ test("SECURITY documents the remaining host-protocol permit paths", () => {
   assert.match(security, /too-small pipe/);
   assert.match(security, /3584 serialized bytes/);
   assert.match(security, /host timeout.*permit/);
+  assert.match(security, /abort or signal.*without running exit listeners.*permit on both hosts/);
+  assert.match(security, /On POSIX.*exits 2.*permit/);
+  assert.match(security, /In-process code.*permit/);
   assert.match(security, /host-protocol change.*not an in-hook fix/);
   assert.match(security, /host-boundary\.test\.ts/);
   assert.match(security, /does not close the Codex residual/);
