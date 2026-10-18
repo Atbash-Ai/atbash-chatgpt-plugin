@@ -13,6 +13,17 @@ export function resolveOrgName(rawValue = resolve("orgName")): string | undefine
   return orgName === "" ? undefined : orgName;
 }
 
+/**
+ * The signing key exactly as SDK 0.9.2 chose it: a non-empty ATBASH_AGENT_KEY, else config.json's
+ * agentKey. Newer SDKs no longer read config.json for the identity, so the plugin passes this value
+ * explicitly; otherwise installs configured through config.json would sign as nobody and every tool
+ * call would be denied. When empty, the SDK's own key-file lookup runs, as it did before.
+ */
+export function resolveAgentKey(rawValue = resolve("agentKey")): string | undefined {
+  const agentKey = rawValue.trim();
+  return agentKey === "" ? undefined : agentKey;
+}
+
 export function resolveTimeoutMs(rawValue = process.env.ATBASH_CODEX_TIMEOUT_MS): number {
   if (rawValue === undefined || rawValue.trim() === "") {
     return DEFAULT_ATBASH_TIMEOUT_MS;
@@ -32,10 +43,18 @@ export function resolveTimeoutMs(rawValue = process.env.ATBASH_CODEX_TIMEOUT_MS)
   return parsed;
 }
 
-export function createAtbashGuard(): ToolCallGuard {
+export type FromConfig = typeof Atbash.fromConfig;
+
+const sdkFromConfig: FromConfig = (options) => Atbash.fromConfig(options);
+
+export function createAtbashGuard(fromConfig: FromConfig = sdkFromConfig): ToolCallGuard {
+  const agentKey = resolveAgentKey();
   const orgName = resolveOrgName();
-  return Atbash.fromConfig({
+  return fromConfig({
     failClosed: true,
+    // Explicit, not left to the SDK default: an unchecked audit-tier answer must never permit.
+    requireEnforcement: true,
+    ...(agentKey === undefined ? {} : { agentKey }),
     ...(orgName === undefined ? {} : { orgName }),
     timeoutMs: resolveTimeoutMs(),
   });

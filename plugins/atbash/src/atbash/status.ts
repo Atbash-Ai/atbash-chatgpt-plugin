@@ -1,6 +1,6 @@
 import { Atbash, type AgentPolicy } from "@atbash/sdk";
 
-import { resolveOrgName, resolveTimeoutMs } from "./guard.js";
+import { resolveAgentKey, resolveOrgName, resolveTimeoutMs, type FromConfig } from "./guard.js";
 
 export type AtbashStatus =
   | {
@@ -25,17 +25,21 @@ export interface StatusClient {
 
 export type StatusClientFactory = () => StatusClient;
 
-function createStatusClient(): StatusClient {
+export function createStatusClient(
+  fromConfig: FromConfig = (options) => Atbash.fromConfig(options),
+): StatusClient {
+  const agentKey = resolveAgentKey();
   const orgName = resolveOrgName();
-  return Atbash.fromConfig({
+  return fromConfig({
     failClosed: true,
+    ...(agentKey === undefined ? {} : { agentKey }),
     ...(orgName === undefined ? {} : { orgName }),
     timeoutMs: resolveTimeoutMs(),
   });
 }
 
 export async function getAtbashStatus(
-  createClient: StatusClientFactory = createStatusClient,
+  createClient: StatusClientFactory = () => createStatusClient(),
 ): Promise<AtbashStatus> {
   let client: StatusClient;
   try {
