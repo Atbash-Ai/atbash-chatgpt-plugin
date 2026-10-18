@@ -48,9 +48,13 @@ export type FromConfig = typeof Atbash.fromConfig;
 const sdkFromConfig: FromConfig = (options) => Atbash.fromConfig(options);
 
 export function createAtbashGuard(fromConfig: FromConfig = sdkFromConfig): ToolCallGuard {
+  const agentKey = resolveAgentKey();
   const orgName = resolveOrgName();
   return fromConfig({
     failClosed: true,
+    // Explicit, not left to the SDK default: an unchecked audit-tier answer must never permit.
+    requireEnforcement: true,
+    ...(agentKey === undefined ? {} : { agentKey }),
     ...(orgName === undefined ? {} : { orgName }),
     timeoutMs: resolveTimeoutMs(),
   });
