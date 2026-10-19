@@ -235,6 +235,50 @@ test("allows only network and Atbash-directory write permission requests", () =>
   }
 });
 
+// Codex hosts without the request_permissions tool ask on the shell call itself.
+test("a setup command may carry the same access, and no more", () => {
+  const command = `node "${LAUNCHER}" setup start --host codex`;
+  const call = (extra: Record<string, unknown>) =>
+    makeHookInput({ tool_name: "Bash", tool_input: { command, ...extra } });
+
+  for (const extra of [
+    { sandbox_permissions: "require_escalated", justification: "Atbash setup" },
+    {
+      sandbox_permissions: "with_additional_permissions",
+      additional_permissions: { network: { enabled: true }, file_system: { write: [CONFIG] } },
+    },
+    { sandbox_permissions: "use_default", additional_permissions: null },
+  ]) {
+    assert.equal(isSetupToolCall(call(extra), options), true, JSON.stringify(extra));
+  }
+  for (const additional_permissions of [
+    { file_system: { write: ["/home/user"] } },
+    { file_system: { read: ["/"] } },
+    { network: { enabled: true }, macos: { accessibility: true } },
+    {},
+  ]) {
+    assert.equal(
+      isSetupToolCall(
+        call({ sandbox_permissions: "with_additional_permissions", additional_permissions }),
+        options,
+      ),
+      false,
+      JSON.stringify(additional_permissions),
+    );
+  }
+  // The access check never turns a non-setup command into a setup call.
+  assert.equal(
+    isSetupToolCall(
+      makeHookInput({
+        tool_name: "Bash",
+        tool_input: { command: "git status", sandbox_permissions: "require_escalated" },
+      }),
+      options,
+    ),
+    false,
+  );
+});
+
 test("a write grant cannot reach outside the directory through a link inside it", async () => {
   const base = await mkdtemp(join(tmpdir(), "atbash-bootstrap-link-"));
   const config = join(base, "config");
