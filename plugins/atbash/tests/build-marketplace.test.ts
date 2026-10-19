@@ -115,6 +115,7 @@ function withPluginCopy(
     for (const entry of [
       "build-marketplace.mjs",
       "build-lib.mjs",
+      "build-environments.json",
       "package.json",
       "tsconfig.json",
     ]) {
@@ -139,8 +140,26 @@ function withPluginCopy(
       mode: 0o755,
     });
     writeFileSync(join(tools, "npm.cmd"), "@echo npm from PATH (stand-in) 1>&2\r\n@exit /b 1\r\n");
+    // The copy builds for the environment the committed runtime records, with that environment's
+    // SDK package (dev builds an aliased @atbash/sdk-dev), as CI's runtime check does.
+    const buildEnv = (
+      JSON.parse(readFileSync(join(pluginRoot, "runtime", "manifest.json"), "utf8")) as {
+        environment: string;
+      }
+    ).environment;
+    const sdkPackage = (
+      JSON.parse(readFileSync(join(pluginRoot, "build-environments.json"), "utf8")) as Record<
+        string,
+        { sdkPackage: string }
+      >
+    )[buildEnv]!.sdkPackage;
     // packEnv shapes what the stand-in packs; the copy's lockfile records those same tarballs.
-    const env: NodeJS.ProcessEnv = { ...process.env, ...packEnv, npm_execpath: npmCli };
+    const env: NodeJS.ProcessEnv = {
+      ...process.env,
+      ...packEnv,
+      npm_execpath: npmCli,
+      ATBASH_BUILD_ENV: buildEnv,
+    };
     // Windows spells it Path: prepend to the key the environment already has, so the child sees
     // one PATH with the stand-in first.
     const pathKey = Object.keys(env).find((key) => key.toUpperCase() === "PATH") ?? "PATH";
@@ -150,7 +169,7 @@ function withPluginCopy(
     // integrity the stand-in reports for it, as a real lockfile records the published tarball's.
     const sdkVersion = (
       JSON.parse(
-        readFileSync(join(repoRoot, "node_modules", "@atbash", "sdk", "package.json"), "utf8"),
+        readFileSync(join(repoRoot, "node_modules", ...sdkPackage.split("/"), "package.json"), "utf8"),
       ) as { version: string }
     ).version;
     const packed = join(dir, "packed");
@@ -164,7 +183,12 @@ function withPluginCopy(
       );
       const integrity = (JSON.parse(out.stdout) as { integrity: string }[])[0]?.integrity;
       assert.ok(integrity, `the stand-in npm reported no integrity for ${name}: ${out.stderr}`);
-      packages[`node_modules/${name}`] = { version: sdkVersion, integrity };
+      // Recorded where npm puts it for this SDK: an aliased SDK's natives nest under the alias.
+      const key =
+        sdkPackage === "@atbash/sdk"
+          ? `node_modules/${name}`
+          : `node_modules/${sdkPackage}/node_modules/${name}`;
+      packages[key] = { version: sdkVersion, integrity };
     }
     writeFileSync(join(dir, "package-lock.json"), JSON.stringify({ lockfileVersion: 3, packages }));
     fn(copy, env);
