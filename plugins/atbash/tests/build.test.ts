@@ -19,6 +19,7 @@ interface BuildHelpers {
     packageName: string,
     version: string,
     integrity: unknown,
+    sdkPackage?: string,
   ) => void;
 }
 
@@ -161,4 +162,34 @@ test("build: a packed native package must match the lockfile's integrity for tha
     /not in the lockfile/,
   );
   assert.throws(() => helpers.assertLockedIntegrity(null, name, "1.2.3", integrity), /lockfile/);
+});
+
+// The dev build packs the natives of an aliased SDK (@atbash/sdk-dev), which npm nests under the
+// alias's folder. That nested entry is the one checked, and a top-level copy of another version
+// cannot vouch for it.
+test("build: an aliased SDK's native package is checked against its own nested lockfile entry", () => {
+  const name = "@atbash/sdk-linux-x64-gnu";
+  const sdk = "@atbash/sdk-dev";
+  const nested = "sha512-NEST";
+  const top = "sha512-TOP";
+  const lock = {
+    packages: {
+      [`node_modules/${sdk}/node_modules/${name}`]: { version: "2.0.0-dev.0", integrity: nested },
+      [`node_modules/${name}`]: { version: "1.2.3", integrity: top },
+    },
+  };
+  helpers.assertLockedIntegrity(lock, name, "2.0.0-dev.0", nested, sdk);
+  assert.throws(
+    () => helpers.assertLockedIntegrity(lock, name, "1.2.3", top, sdk),
+    /does not match the lockfile/,
+  );
+  assert.throws(
+    () => helpers.assertLockedIntegrity(lock, name, "2.0.0-dev.0", "sha512-BBBB", sdk),
+    /does not match the lockfile/,
+  );
+  assert.throws(
+    () =>
+      helpers.assertLockedIntegrity({ packages: {} }, name, "2.0.0-dev.0", nested, sdk),
+    /not in the lockfile/,
+  );
 });
