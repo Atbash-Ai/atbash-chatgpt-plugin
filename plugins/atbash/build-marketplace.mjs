@@ -111,11 +111,17 @@ export function assertInsidePackage(extractDir, target) {
 
 // A packed native package must be the one the lockfile pins: same version, same integrity. npm pack
 // fetches by name and version, so a republished or substituted tarball would otherwise be committed.
-export function assertLockedIntegrity(lock, packageName, version, integrity) {
+// The entry is looked up the way npm resolves it for the SDK being built: nested under that SDK's
+// folder first (an aliased SDK such as @atbash/sdk-dev gets its own copies there), then top level.
+export function assertLockedIntegrity(lock, packageName, version, integrity, sdkPackage) {
   if (lock === null || typeof lock !== "object" || typeof lock.packages !== "object") {
     throw new Error("The lockfile has no packages section to check native packages against.");
   }
-  const entry = lock.packages[`node_modules/${packageName}`];
+  const nested =
+    sdkPackage === undefined
+      ? undefined
+      : lock.packages[`node_modules/${sdkPackage}/node_modules/${packageName}`];
+  const entry = nested ?? lock.packages[`node_modules/${packageName}`];
   if (entry === undefined || entry === null) {
     throw new Error(`${packageName} is not in the lockfile.`);
   }
@@ -178,7 +184,13 @@ export async function buildMarketplace() {
       if (metadata?.filename === undefined || nativeFile?.path === undefined) {
         throw new Error(`${packageName}@${sdkVersion} did not contain a native .node file.`);
       }
-      assertLockedIntegrity(lock, packageName, sdkVersion, metadata.integrity);
+      assertLockedIntegrity(
+        lock,
+        packageName,
+        sdkVersion,
+        metadata.integrity,
+        environment.sdkPackage,
+      );
 
       const archive = join(tempDir, metadata.filename);
       const extractDir = join(tempDir, platform);
