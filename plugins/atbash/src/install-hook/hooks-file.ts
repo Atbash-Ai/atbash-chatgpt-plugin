@@ -20,6 +20,7 @@ import {
   existsSync,
   lstatSync,
   mkdirSync,
+  mkdtempSync,
   readFileSync,
   realpathSync,
   renameSync,
@@ -433,9 +434,15 @@ export function windowsPowerShellPath(env: Readonly<Record<string, string | unde
 }
 
 /** Run the registered command string exactly as the host would - Windows PowerShell
- *  (`-NoProfile -NonInteractive -Command`) with `commandWindows` and again with `command` on
- *  win32, `/bin/sh -c` with `command` elsewhere - with the synthetic payload on stdin and an
- *  environment that has no PATH, no home and no Atbash configuration. Anything but exit 0 and one
+ *  (`-NoProfile -NonInteractive -Command`) with `commandWindows` on win32, `/bin/sh -c` with
+ *  `command` elsewhere - with the synthetic payload on stdin and an environment that has no
+ *  PATH, no reachable home configuration and no Atbash configuration. Only the spelling the
+ *  host runs on this platform is probed (the same spelling `spawnableCommand` judges): the
+ *  POSIX `command` string is never executed by a Windows host, and running it through
+ *  PowerShell can hang before the hook starts - PowerShell does not return from invoking
+ *  some interpreter paths in their forward-slash spelling (measured with an fnm-installed
+ *  node: the backslash spelling answers in seconds, the forward-slash spelling never
+ *  answers), which made the probe refuse healthy registrations. Anything but exit 0 and one
  *  deny decision on stdout is a refusal: a string the shell cannot execute would be a hook that
  *  never answers, and the host proceeds. */
 export function probeRegisteredCommand(
@@ -449,9 +456,16 @@ export function probeRegisteredCommand(
       "the registered command could not be executed by the host shell: the entry has no hook",
     );
   }
-  const commands =
-    platform === "win32" ? [hook.commandWindows ?? hook.command, hook.command] : [hook.command];
+  const commands = platform === "win32" ? [hook.commandWindows ?? hook.command] : [hook.command];
   for (const command of commands) runProbe(command, platform, timeoutMs);
+}
+
+/** Decode probe output captured as bytes. Windows PowerShell 5.1 writes its startup errors as
+ *  UTF-16LE, which a UTF-8 decode turns into NUL-separated garbage; real UTF-8 output (node,
+ *  `/bin/sh`) contains no NUL bytes, so their presence selects the decoding. */
+function decodeProbeOutput(bytes: Buffer | null): string {
+  if (bytes === null || bytes.length === 0) return "";
+  return bytes.includes(0) ? bytes.toString("utf16le") : bytes.toString("utf8");
 }
 
 function runProbe(command: string, platform: NodeJS.Platform, timeoutMs: number): void {
@@ -460,13 +474,20 @@ function runProbe(command: string, platform: NodeJS.Platform, timeoutMs: number)
       `the registered command could not be executed by the host shell: ${reason} (command: ${command})`,
     );
   };
-  // No PATH (the interpreter must be absolute), no home (no config file), an invalid SDK budget
-  // (no network call): the hook has to deny from configuration alone. The shell and node still
-  // need the system roots, and PowerShell needs PATHEXT to run any native program at all.
+  // No PATH (the interpreter must be absolute), an empty scratch home (no config file reachable),
+  // an invalid SDK budget (no network call): the hook has to deny from configuration alone. The
+  // shell and node still need the system roots, and PowerShell needs PATHEXT to run any native
+  // program at all. The home variables point at a fresh empty directory, never "": Windows
+  // PowerShell 5.1 crashes at startup when USERPROFILE is present but empty (the type
+  // initializer for System.Management.Automation.Utils throws), so an emptied home made the
+  // probe fail before the registered command ever ran. Omitting them is no better: Node's
+  // homedir lookup then falls back to the real Windows profile, finds the operator's actual
+  // configuration and makes the network pre-flight call this probe exists to avoid.
+  const scratchHome = mkdtempSync(join(tmpdir(), "atbash-probe-home-"));
   const env: Record<string, string> = {
     PATH: "",
-    HOME: "",
-    USERPROFILE: "",
+    HOME: scratchHome,
+    USERPROFILE: scratchHome,
     ATBASH_CODEX_TIMEOUT_MS: "invalid",
     ATBASH_HOOK_DEADLINE_MS: "",
   };
@@ -479,41 +500,48 @@ function runProbe(command: string, platform: NodeJS.Platform, timeoutMs: number)
     platform === "win32"
       ? [windowsPowerShellPath(process.env), ["-NoProfile", "-NonInteractive", "-Command", command]]
       : ["/bin/sh", ["-c", command]];
-  // A neutral working directory: with the home variables emptied a relative config lookup would
-  // otherwise resolve against whatever directory the installer was started from.
-  const result = spawnSync(shell, args, {
-    input: JSON.stringify(PROBE_PAYLOAD),
-    encoding: "utf8",
-    env,
-    cwd: tmpdir(),
-    timeout: timeoutMs,
-    windowsHide: true,
-  });
-  if (result.error !== undefined) {
-    const code = (result.error as NodeJS.ErrnoException).code;
-    return fail(code === "ETIMEDOUT" ? `no decision within ${timeoutMs} ms` : result.error.message);
-  }
-  if (result.status !== 0) {
-    const detail = (result.stderr ?? "").trim().split(/\r?\n/)[0]?.slice(0, 200) ?? "";
-    return fail(
-      `exit ${result.status ?? `signal ${result.signal ?? "unknown"}`}${detail === "" ? "" : ` (${detail})`}`,
-    );
-  }
-  let decision: unknown;
+  // A neutral working directory: with the home pointed at the scratch directory a relative
+  // config lookup would otherwise resolve against whatever directory the installer was
+  // started from.
   try {
-    decision = JSON.parse((result.stdout ?? "").trim());
-  } catch {
-    return fail("stdout is not one JSON object");
-  }
-  const permission = isPlainObject(decision)
-    ? isPlainObject(decision.hookSpecificOutput)
-      ? decision.hookSpecificOutput.permissionDecision
-      : undefined
-    : undefined;
-  if (permission !== "deny") {
-    return fail(
-      `stdout is not a deny decision (permissionDecision: ${JSON.stringify(permission)})`,
-    );
+    const result = spawnSync(shell, args, {
+      input: JSON.stringify(PROBE_PAYLOAD),
+      encoding: null,
+      env,
+      cwd: tmpdir(),
+      timeout: timeoutMs,
+      windowsHide: true,
+    });
+    if (result.error !== undefined) {
+      const code = (result.error as NodeJS.ErrnoException).code;
+      return fail(
+        code === "ETIMEDOUT" ? `no decision within ${timeoutMs} ms` : result.error.message,
+      );
+    }
+    if (result.status !== 0) {
+      const detail = decodeProbeOutput(result.stderr).trim().split(/\r?\n/)[0]?.slice(0, 200) ?? "";
+      return fail(
+        `exit ${result.status ?? `signal ${result.signal ?? "unknown"}`}${detail === "" ? "" : ` (${detail})`}`,
+      );
+    }
+    let decision: unknown;
+    try {
+      decision = JSON.parse(decodeProbeOutput(result.stdout).trim());
+    } catch {
+      return fail("stdout is not one JSON object");
+    }
+    const permission = isPlainObject(decision)
+      ? isPlainObject(decision.hookSpecificOutput)
+        ? decision.hookSpecificOutput.permissionDecision
+        : undefined
+      : undefined;
+    if (permission !== "deny") {
+      return fail(
+        `stdout is not a deny decision (permissionDecision: ${JSON.stringify(permission)})`,
+      );
+    }
+  } finally {
+    rmSync(scratchHome, { force: true, recursive: true });
   }
 }
 
