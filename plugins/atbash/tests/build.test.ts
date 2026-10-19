@@ -188,8 +188,7 @@ test("build: an aliased SDK's native package is checked against its own nested l
     /does not match the lockfile/,
   );
   assert.throws(
-    () =>
-      helpers.assertLockedIntegrity({ packages: {} }, name, "2.0.0-dev.0", nested, sdk),
+    () => helpers.assertLockedIntegrity({ packages: {} }, name, "2.0.0-dev.0", nested, sdk),
     /not in the lockfile/,
   );
 });
