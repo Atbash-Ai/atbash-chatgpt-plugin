@@ -17,7 +17,12 @@ After a user completes verification or approval, inspect the same job and perfor
 
 ## Start or resume setup
 
-The helper needs network access to reach Atbash and write access to the Atbash configuration directory: the absolute path of `~/.config/atbash`, or `$ATBASH_CONFIG_DIR` when it is set. Before the first helper command, request both in one `request_permissions` call, with `network.enabled` set to `true` and that directory as the only `file_system.write` path, and ask the user to allow it for the session. If they allow it only for this turn, make the same request again at the start of each later turn, before the first helper command. A helper error that says Atbash "could not be reached" or "could not write" means this access is missing, not that the service is down: make the same request, then run the same command again once.
+The helper needs network access to reach Atbash and write access to the Atbash configuration directory: the absolute path of `~/.config/atbash`, or `$ATBASH_CONFIG_DIR` when it is set. How to get that access depends on the tools this session has:
+
+- If a `request_permissions` tool is available, request both in one call before the first helper command, with `network.enabled` set to `true` and that directory as the only `file_system.write` path, and ask the user to allow it for the session. If they allow it only for this turn, make the same request again at the start of each later turn, before the first helper command.
+- Otherwise, run the helper command as usual. If the sandbox blocks it, run the same command again with `sandbox_permissions` set to `"with_additional_permissions"` and `additional_permissions` holding the same network and directory access, when the shell tool offers that option; if it does not, set `sandbox_permissions` to `"require_escalated"`. Give a one-sentence `justification` saying the Atbash setup helper needs to reach Atbash and save its configuration, so the user can approve it.
+
+Do not stop setup because `request_permissions` is not available. A helper error that says Atbash "could not be reached" or "could not write" means this access is missing, not that the service is down: get the access as above, then run the same command again once.
 
 Run the helper through this skill's `scripts/atbash-control.mjs` launcher, using the absolute skill directory:
 

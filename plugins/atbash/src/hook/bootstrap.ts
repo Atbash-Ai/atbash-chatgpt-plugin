@@ -230,16 +230,14 @@ function onlyKeys(value: Record<string, unknown>, allowed: string[]): boolean {
  * inside the Atbash configuration directory.
  *
  * The Codex app's sandbox blocks both by default, so the first helper command
- * fails and Codex asks the user for access through `request_permissions`.
- * Denying that request here would stop setup at its first step. Read access,
- * any path outside the configuration directory, any other permission type, and
- * an empty request are all still denied.
+ * fails and Codex asks the user for access — through the `request_permissions`
+ * tool where the host offers it, or on the shell call itself as
+ * `additional_permissions`. Denying that would stop setup at its first step.
+ * Read access, any path outside the configuration directory, any other
+ * permission type, and an empty request are all still denied.
  */
-function isSetupPermissionRequest(
-  toolInput: Record<string, unknown>,
-  env: NodeJS.ProcessEnv,
-): boolean {
-  const permissions = record(toolInput.permissions);
+function isSetupPermissions(value: unknown, env: NodeJS.ProcessEnv): boolean {
+  const permissions = record(value);
   if (!permissions || !onlyKeys(permissions, ["network", "file_system"])) return false;
   const requested = (key: string) => permissions[key] !== undefined && permissions[key] !== null;
   if (!requested("network") && !requested("file_system")) return false;
@@ -289,13 +287,22 @@ export function isSetupToolCall(
     if (options.pluginRoot === undefined) return false;
     const cwd =
       typeof toolInput.workdir === "string" ? resolve(input.cwd, toolInput.workdir) : input.cwd;
+    // Access asked for on the call itself is held to the same limit as a
+    // request_permissions call, so a setup command cannot carry a wider grant.
+    const extra = toolInput.additional_permissions;
+    if (
+      extra !== undefined &&
+      extra !== null &&
+      !isSetupPermissions(extra, options.env ?? process.env)
+    )
+      return false;
     return (
       isSetupCommand(command, cwd, options.pluginRoot) ||
       isSkillRead(command, cwd, options.pluginRoot)
     );
   }
   if (input.tool_name === "request_permissions") {
-    return isSetupPermissionRequest(toolInput, options.env ?? process.env);
+    return isSetupPermissions(toolInput.permissions, options.env ?? process.env);
   }
   return USER_QUESTION_TOOLS.has(input.tool_name);
 }
