@@ -76,7 +76,10 @@ export class ControlClient {
       if (error instanceof ControlApiError) throw error;
       if (error instanceof Error && error.name === "AbortError")
         throw new ControlApiError("Atbash request timed out.");
-      throw new ControlApiError("Atbash could not be reached.");
+      // The Codex app's sandbox blocks network access until the user grants it.
+      throw new ControlApiError(
+        "Atbash could not be reached. If this command runs in a sandbox without network access, request network access and run it again.",
+      );
     } finally {
       clearTimeout(timeout);
     }

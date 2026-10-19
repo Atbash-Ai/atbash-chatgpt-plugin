@@ -118,6 +118,8 @@ export async function startControlJob(input: {
   const store = input.store ?? new ControlStore();
   const serviceOrigin = resolveControlOrigin(input.serviceOrigin);
   const client = input.client ?? new ControlClient(serviceOrigin);
+  // Fail on a missing local write permission before a dashboard session exists.
+  await store.preparePlanDirectory();
   const keyDelivery = generateKeyDeliveryPair();
   const created = await client.createSession({
     host: input.host,
@@ -141,7 +143,6 @@ export async function startControlJob(input: {
     keyDeliveryPrivateKeyPem: keyDelivery.privateKeyPem,
   };
   await store.saveJob(job);
-  await store.preparePlanDirectory();
   return {
     schemaVersion: 1,
     jobId: job.jobId,

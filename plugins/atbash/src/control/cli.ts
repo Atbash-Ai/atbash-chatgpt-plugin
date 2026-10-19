@@ -1,3 +1,5 @@
+import { sep } from "node:path";
+
 import {
   cancelControlJob,
   continueControlJob,
@@ -9,7 +11,26 @@ import {
 } from "./workflow.js";
 import type { ControlHost } from "./protocol.js";
 import { startLocalImportServer } from "./local-import.js";
-import { ControlStore } from "./store.js";
+import { ControlStore, configRoot } from "./store.js";
+
+const DENIED_CODES = new Set(["EPERM", "EACCES", "EROFS"]);
+
+/**
+ * The message the helper reports for a failure. A sandbox denial names the
+ * access to request instead of surfacing a raw errno, so the assistant asks for
+ * the right permission rather than concluding the service is down.
+ */
+export function describeControlError(error: unknown, env = process.env): string {
+  const { code, path, syscall } = (error ?? {}) as NodeJS.ErrnoException;
+  if (code !== undefined && DENIED_CODES.has(code)) {
+    const root = configRoot(env);
+    if (typeof path === "string" && (path === root || path.startsWith(`${root}${sep}`)))
+      return `Atbash setup could not write to ${root}. If this command runs in a sandbox, request write access to ${root} and run it again.`;
+    if (syscall === "listen" || syscall === "bind")
+      return "Atbash setup could not open its local key page. If this command runs in a sandbox, request network access and run it again.";
+  }
+  return error instanceof Error ? error.message : "Atbash setup failed.";
+}
 
 function option(args: string[], name: string): string | undefined {
   const index = args.indexOf(name);

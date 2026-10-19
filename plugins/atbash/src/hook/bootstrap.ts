@@ -1,4 +1,5 @@
 import { existsSync, lstatSync, readFileSync, realpathSync } from "node:fs";
+import { homedir } from "node:os";
 import { dirname, isAbsolute, join, resolve, sep } from "node:path";
 import { getConfigPath, keyPathCandidates } from "@atbash/sdk";
 
@@ -54,6 +55,8 @@ const READERS = new Set(["Get-Content", "get-content", "cat", "type"]);
 const READ_FLAGS = new Set(["-Raw", "-raw", "-Force", "-force", "--"]);
 /** Flags whose value IS the path, so the path still arrives as the lone non-flag word. */
 const READ_PATH_FLAGS = new Set(["-LiteralPath", "-literalpath", "-Path", "-path"]);
+/** Codex's prompts that only ask the user a question; setup uses them to collect names and choices. */
+const USER_QUESTION_TOOLS = new Set(["request_user_input", "request_user_input_async"]);
 
 export interface SetupBootstrap {
   hasConfiguration(): boolean;
@@ -209,25 +212,92 @@ function record(value: unknown): Record<string, unknown> | undefined {
     : undefined;
 }
 
+function isInside(root: string, path: string): boolean {
+  return path === root || path.startsWith(`${root}${sep}`);
+}
+
+function expandHome(path: string): string {
+  if (path === "~") return homedir();
+  return path.startsWith("~/") ? join(homedir(), path.slice(2)) : path;
+}
+
+function onlyKeys(value: Record<string, unknown>, allowed: string[]): boolean {
+  return Object.keys(value).every((key) => allowed.includes(key));
+}
+
 /**
- * Codex routes every operation — shell, file read, file write — through one
- * tool whose argument is `command` (confirmed against Codex 0.160.0: it writes
- * files by running `Set-Content` and reads them with `Get-Content`). There is
- * no file tool to exempt separately, which is why the plan is passed to the
- * launcher inline with `--json` rather than written to disk first.
+ * The sandbox access the helper needs, and nothing more: network, and writes
+ * inside the Atbash configuration directory.
+ *
+ * The Codex app's sandbox blocks both by default, so the first helper command
+ * fails and Codex asks the user for access through `request_permissions`.
+ * Denying that request here would stop setup at its first step. Read access,
+ * any path outside the configuration directory, any other permission type, and
+ * an empty request are all still denied.
+ */
+function isSetupPermissionRequest(
+  toolInput: Record<string, unknown>,
+  env: NodeJS.ProcessEnv,
+): boolean {
+  const permissions = record(toolInput.permissions);
+  if (!permissions || !onlyKeys(permissions, ["network", "file_system"])) return false;
+  const requested = (key: string) => permissions[key] !== undefined && permissions[key] !== null;
+  if (!requested("network") && !requested("file_system")) return false;
+  if (requested("network")) {
+    const network = record(permissions.network);
+    if (!network || !onlyKeys(network, ["enabled"]) || typeof network.enabled !== "boolean")
+      return false;
+  }
+  if (requested("file_system")) {
+    const fileSystem = record(permissions.file_system);
+    if (!fileSystem || !onlyKeys(fileSystem, ["write"])) return false;
+    const write = fileSystem.write;
+    if (!Array.isArray(write) || write.length === 0) return false;
+    const root = canonical(configRoot(env));
+    for (const path of write) {
+      if (typeof path !== "string" || hasControlCharacter(path)) return false;
+      const expanded = expandHome(path);
+      // Canonical on both sides, so a link inside the directory cannot widen the grant.
+      if (!isAbsolute(expanded) || !isInside(root, canonical(expanded))) return false;
+    }
+  }
+  return true;
+}
+
+/**
+ * Dispatches on the tool first, so a tool's arguments are only ever read the
+ * way that tool means them: `apply_patch`, for one, carries its patch text in
+ * a field also named `command`.
+ *
+ * Shell calls: Codex routes shell, file reads and file writes through one tool
+ * (confirmed against Codex 0.160.0: it writes files with `Set-Content` and
+ * reads them with `Get-Content`). There is no file tool to exempt separately,
+ * which is why the plan is passed to the launcher inline with `--json` rather
+ * than written to disk first. A relative path resolves against the call's own
+ * `workdir` when it has one, since that is where the command runs.
  */
 export function isSetupToolCall(
   input: PreToolUseInput,
   options: SetupBootstrapOptions = {},
 ): boolean {
   const toolInput = record(input.tool_input);
-  const command = toolInput?.command;
-  if (typeof command !== "string" || command === "") return false;
-  if (options.pluginRoot === undefined) return false;
-  return (
-    isSetupCommand(command, input.cwd, options.pluginRoot) ||
-    isSkillRead(command, input.cwd, options.pluginRoot)
-  );
+  if (!toolInput) return false;
+
+  if (input.tool_name === "Bash") {
+    const command = toolInput.command ?? toolInput.cmd;
+    if (typeof command !== "string" || command === "") return false;
+    if (options.pluginRoot === undefined) return false;
+    const cwd =
+      typeof toolInput.workdir === "string" ? resolve(input.cwd, toolInput.workdir) : input.cwd;
+    return (
+      isSetupCommand(command, cwd, options.pluginRoot) ||
+      isSkillRead(command, cwd, options.pluginRoot)
+    );
+  }
+  if (input.tool_name === "request_permissions") {
+    return isSetupPermissionRequest(toolInput, options.env ?? process.env);
+  }
+  return USER_QUESTION_TOOLS.has(input.tool_name);
 }
 
 /** The plugin root is two levels above the running hook script (runtime/pre-tool-use.cjs). */

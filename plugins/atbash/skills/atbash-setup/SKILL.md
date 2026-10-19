@@ -17,13 +17,15 @@ After a user completes verification or approval, inspect the same job and perfor
 
 ## Start or resume setup
 
+The helper needs network access to reach Atbash and write access to the Atbash configuration directory: the absolute path of `~/.config/atbash`, or `$ATBASH_CONFIG_DIR` when it is set. Before the first helper command, request both in one `request_permissions` call, with `network.enabled` set to `true` and that directory as the only `file_system.write` path, and ask the user to allow it for the session. If they allow it only for this turn, make the same request again at the start of each later turn, before the first helper command. A helper error that says Atbash "could not be reached" or "could not write" means this access is missing, not that the service is down: make the same request, then run the same command again once.
+
 Run the helper through this skill's `scripts/atbash-control.mjs` launcher, using the absolute skill directory:
 
 ```text
 node "<skill-directory>/scripts/atbash-control.mjs" setup start --host codex
 ```
 
-Until setup activates a profile, the hook allows only these setup steps and denies everything else with "Atbash is not set up yet". Run each helper command as one plain command in exactly this form: no `cd`, `&&`, `;`, pipes, redirection, environment-variable prefixes, or command substitution, and no `--service` option. Commands in any other form are denied.
+Until setup activates a profile, the hook allows only these setup steps, the access request above, and questions to the user, and denies everything else with "Atbash is not set up yet". Run each helper command as one plain command in exactly this form: no `cd`, `&&`, `;`, pipes, redirection, environment-variable prefixes, or command substitution, and no `--service` option. Commands in any other form are denied.
 
 The result contains a public `verificationUri`, verification code, opaque job ID, and `planPath`. Show the URL and code to the user and ask them to complete wallet verification in **Connect Atbash**, then come back to the conversation. Never expose files under `~/.config/atbash/pending`, `credentials`, `profiles`, or `hosts`.
 

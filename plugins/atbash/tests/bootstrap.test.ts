@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
+import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 
@@ -181,6 +181,116 @@ test("denies a tool call carrying no command", () => {
       JSON.stringify(toolInput),
     );
   }
+});
+
+function permissions(value: unknown) {
+  return makeHookInput({
+    tool_name: "request_permissions",
+    tool_input: { permissions: value, reason: "Atbash setup" },
+  });
+}
+
+// Shapes captured from the Codex app's session logs (hook trusted, no profile).
+test("allows only network and Atbash-directory write permission requests", () => {
+  for (const value of [
+    { network: { enabled: true } },
+    { file_system: { write: [CONFIG] } },
+    { file_system: { write: [`${CONFIG}/pending`, `${CONFIG}/credentials`] } },
+    { network: { enabled: true }, file_system: { write: [CONFIG] } },
+    { network: { enabled: true }, file_system: null },
+  ]) {
+    assert.equal(isSetupToolCall(permissions(value), options), true, JSON.stringify(value));
+  }
+  const home = { pluginRoot: ROOT, env: {} };
+  assert.equal(
+    isSetupToolCall(permissions({ file_system: { write: ["~/.config/atbash"] } }), home),
+    true,
+  );
+  assert.equal(
+    isSetupToolCall(
+      permissions({ file_system: { write: [join(homedir(), ".config", "atbash")] } }),
+      home,
+    ),
+    true,
+  );
+
+  for (const value of [
+    {},
+    { network: null, file_system: null },
+    { file_system: { write: ["/home/user"] } },
+    { file_system: { write: ["/home/user/.config"] } },
+    { file_system: { write: [`${CONFIG}-other`] } },
+    { file_system: { write: [`${CONFIG}/../../.ssh`] } },
+    { file_system: { write: ["relative/path"] } },
+    { file_system: { write: [] } },
+    { file_system: { write: [CONFIG, "/etc"] } },
+    { file_system: { read: [CONFIG] } },
+    { file_system: { write: [CONFIG], read: ["/"] } },
+    { network: { enabled: true, hosts: ["*"] } },
+    { network: true },
+    { network: { enabled: true }, macos: { accessibility: true } },
+    [{ network: { enabled: true } }],
+  ]) {
+    assert.equal(isSetupToolCall(permissions(value), options), false, JSON.stringify(value));
+  }
+});
+
+test("a write grant cannot reach outside the directory through a link inside it", async () => {
+  const base = await mkdtemp(join(tmpdir(), "atbash-bootstrap-link-"));
+  const config = join(base, "config");
+  const outside = join(base, "outside");
+  try {
+    await mkdir(config, { recursive: true });
+    await mkdir(outside, { recursive: true });
+    // A junction needs no elevation on Windows; elsewhere the type is ignored.
+    await symlink(outside, join(config, "escape"), "junction");
+    const linked = { pluginRoot: ROOT, env: { ATBASH_CONFIG_DIR: config } };
+    assert.equal(
+      isSetupToolCall(permissions({ file_system: { write: [join(config, "plans")] } }), linked),
+      true,
+    );
+    assert.equal(
+      isSetupToolCall(permissions({ file_system: { write: [join(config, "escape")] } }), linked),
+      false,
+    );
+  } finally {
+    await rm(base, { recursive: true, force: true });
+  }
+});
+
+test("allows Codex's question prompts", () => {
+  for (const toolName of ["request_user_input", "request_user_input_async"]) {
+    const input = makeHookInput({
+      tool_name: toolName,
+      tool_input: { questions: [{ title: "Agent name", options: ["Create", "Connect"] }] },
+    });
+    assert.equal(isSetupToolCall(input, options), true, toolName);
+  }
+});
+
+test("only a shell call is read as a command", () => {
+  // apply_patch carries its patch text in a field also named `command`.
+  for (const toolName of ["apply_patch", "view_image", "update_plan", "mcp__atbash__status"]) {
+    const input = makeHookInput({
+      tool_name: toolName,
+      tool_input: { command: `node "${LAUNCHER}" setup start --host codex` },
+    });
+    assert.equal(isSetupToolCall(input, options), false, toolName);
+  }
+});
+
+test("a relative path resolves against the call's own workdir", () => {
+  const relative = "skills/atbash-setup/scripts/atbash-control.mjs";
+  const call = (cwd: string, workdir?: string) =>
+    makeHookInput({
+      tool_name: "Bash",
+      tool_input: { command: `node ${relative} setup start --host codex`, workdir },
+      cwd,
+    });
+  assert.equal(isSetupToolCall(call("/workspace/example", ROOT), options), true);
+  // The session sits in the plugin, but the command runs somewhere else: a
+  // look-alike launcher there must not pass as the real one.
+  assert.equal(isSetupToolCall(call(ROOT, "/tmp/elsewhere"), options), false);
 });
 
 test("detects any existing configuration source", async () => {
