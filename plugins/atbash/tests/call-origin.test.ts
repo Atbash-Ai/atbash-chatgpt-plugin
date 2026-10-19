@@ -542,11 +542,13 @@ test("only the tail is read, and a recent injection is still found in a large tr
 
 test("the context carries the fact only for tool_output, and never transcript text", () => {
   const input = makeHookInput();
-  const plain = "source=codex; workspace=example; model=gpt-test; permission_mode=default";
+  // No workspace folder name: it can name a client, and a cloned repository controls it.
+  const plain = "source=codex; model=gpt-test; permission_mode=default";
   assert.equal(buildAtbashContext(input), plain);
   assert.equal(buildAtbashContext(input, "unknown"), plain);
   const withFact = buildAtbashContext(input, "tool_output");
   assert.equal(withFact, `${plain}; ${CALL_ORIGIN_TOOL_OUTPUT}`);
+  assert.equal(withFact.includes("workspace="), false);
   assert.equal(
     CALL_ORIGIN_TOOL_OUTPUT,
     "call_origin=tool_output (the instruction for this call appeared in a tool output, not in the user request)",
@@ -581,7 +583,7 @@ test("the hook sends the fact to the judge when the transcript shows an injectio
     assert.equal(calls.length, 1);
     assert.equal(
       calls[0]?.context,
-      `source=codex; workspace=example; model=gpt-test; permission_mode=default; ${CALL_ORIGIN_TOOL_OUTPUT}`,
+      `source=codex; model=gpt-test; permission_mode=default; ${CALL_ORIGIN_TOOL_OUTPUT}`,
     );
     // The user asked for it: no fact.
     writeFileSync(
