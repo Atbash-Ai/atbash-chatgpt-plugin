@@ -401,5 +401,10 @@ test("shipped runtime sends only fixed, checked facts in the judge context", () 
     );
     assertCheckedModel(source, bundle);
     assert.doesNotMatch(source, /workspace=/, bundle);
+    // The transcript reader refuses any two leading separators in any mix (security review
+    // 2026-10-19), so a rebuild cannot drop that rule from the shipped hook.
+    if (bundle === "runtime/pre-tool-use-main.cjs") {
+      assert.ok(source.includes("/^[\\\\/]{2}/"), `${bundle}: the network-path check is not the any-mix rule`);
+    }
   }
 });
