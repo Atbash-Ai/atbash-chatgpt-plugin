@@ -1,3 +1,5 @@
+import { sep } from "node:path";
+
 import {
   cancelControlJob,
   continueControlJob,
@@ -5,10 +7,30 @@ import {
   inspectControlJob,
   startControlJob,
   submitControlPlan,
+  submitInlineControlPlan,
 } from "./workflow.js";
 import type { ControlHost } from "./protocol.js";
 import { startLocalImportServer } from "./local-import.js";
-import { ControlStore } from "./store.js";
+import { ControlStore, configRoot } from "./store.js";
+
+const DENIED_CODES = new Set(["EPERM", "EACCES", "EROFS"]);
+
+/**
+ * The message the helper reports for a failure. A sandbox denial names the
+ * access to request instead of surfacing a raw errno, so the assistant asks for
+ * the right permission rather than concluding the service is down.
+ */
+export function describeControlError(error: unknown, env = process.env): string {
+  const { code, path, syscall } = (error ?? {}) as NodeJS.ErrnoException;
+  if (code !== undefined && DENIED_CODES.has(code)) {
+    const root = configRoot(env);
+    if (typeof path === "string" && (path === root || path.startsWith(`${root}${sep}`)))
+      return `Atbash setup could not write to ${root}. If this command runs in a sandbox, request write access to ${root} and run it again.`;
+    if (syscall === "listen" || syscall === "bind")
+      return "Atbash setup could not open its local key page. If this command runs in a sandbox, request network access and run it again.";
+  }
+  return error instanceof Error ? error.message : "Atbash setup failed.";
+}
 
 function option(args: string[], name: string): string | undefined {
   const index = args.indexOf(name);
@@ -40,9 +62,19 @@ export async function runControl(args = process.argv.slice(2)): Promise<unknown>
   if ((area === "setup" || area === "manage") && command === "inspect")
     return inspectControlJob(required(positional, "A job ID is required."));
   if ((area === "setup" || area === "manage") && command === "plan") {
+    const jobId = required(positional, "A job ID is required.");
+    // `--json` exists because Codex has no file-writing tool: it writes files by
+    // running a shell command, which the setup hook cannot safely allow. Passing
+    // the plan inline removes the write entirely. `--input` stays for a host that
+    // does have one, and for an operator working in their own terminal.
+    const inline = option(args, "--json");
+    if (inline !== undefined) return submitInlineControlPlan(jobId, inline);
     return submitControlPlan(
-      required(positional, "A job ID is required."),
-      required(option(args, "--input"), "--input must point to a non-secret plan JSON file."),
+      jobId,
+      required(
+        option(args, "--input"),
+        "Pass the plan with --json '<plan>', or --input pointing to a non-secret plan JSON file.",
+      ),
     );
   }
   if ((area === "setup" || area === "manage") && command === "continue")

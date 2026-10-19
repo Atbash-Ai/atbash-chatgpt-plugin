@@ -1,13 +1,14 @@
 import type { Decision, ToolCallInput } from "@atbash/sdk";
 
 import { createAtbashGuard, type ToolCallGuard } from "../atbash/guard.js";
+import { createSetupBootstrap, NOT_SET_UP_REASON, type SetupBootstrap } from "./bootstrap.js";
 import { buildAtbashContext } from "./context.js";
 import { sanitizeReason, type PreToolUseInput } from "./protocol.js";
 
 export type GuardFactory = () => ToolCallGuard;
 
 export type HookOutcome =
-  | { allow: true; source: "atbash" }
+  | { allow: true; source: "atbash" | "setup-bootstrap" }
   | { allow: false; reason: string; verdict: "HOLD" | "BLOCK" | "ERROR" };
 
 function formatReference(toolCallId: string | undefined): string {
@@ -38,15 +39,28 @@ function denyFromDecision(decision: Decision): HookOutcome {
 export async function evaluatePreToolUse(
   input: PreToolUseInput,
   createGuard: GuardFactory = createAtbashGuard,
+  bootstrap: SetupBootstrap = createSetupBootstrap(),
 ): Promise<HookOutcome> {
   let guard: ToolCallGuard;
   try {
     guard = createGuard();
   } catch {
+    // Only a MISSING configuration enters setup mode; an invalid one stays fail
+    // closed. Setup mode allows nothing but the setup steps themselves, so the
+    // most a deleted config could ever unlock is the Atbash setup launcher.
+    if (!bootstrap.hasConfiguration()) {
+      return bootstrap.isSetupCall(input)
+        ? { allow: true, source: "setup-bootstrap" }
+        : { allow: false, verdict: "ERROR", reason: NOT_SET_UP_REASON };
+    }
+    // A configuration exists but cannot be used. Still a denial — but the
+    // operator sees this on every tool call, so it carries the way out.
     return {
       allow: false,
       verdict: "ERROR",
-      reason: "Atbash ERROR: configuration is missing or invalid.",
+      reason:
+        "Atbash ERROR: configuration is missing or invalid. Run the atbash-setup skill to configure this host, " +
+        "or its launcher from a terminal if setup's own tool calls are denied.",
     };
   }
 

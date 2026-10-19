@@ -12,6 +12,7 @@ import {
   DEFAULT_CONTROL_ORIGIN,
   resolveControlOrigin,
 } from "../src/control/client.js";
+import { describeControlError } from "../src/control/cli.js";
 import { decryptAgentKey, generateKeyDeliveryPair } from "../src/control/keys.js";
 import { ControlStore, type PendingJob } from "../src/control/store.js";
 
@@ -103,6 +104,48 @@ test("control client keeps the bearer out of URLs and sends it only in authoriza
   assert.equal(calls[0]?.url, "https://atbash.ai/api/v1/plugin/sessions/session-id");
   assert.equal(calls[0]?.authorization, `Bearer ${"S".repeat(43)}`);
   assert.doesNotMatch(calls[0]?.url ?? "", /SSSS/);
+});
+
+test("an unreachable service names the network access to request", async () => {
+  // In the Codex app's sandbox this is what a blocked network looks like.
+  const fetcher: typeof fetch = async () => {
+    throw new TypeError("fetch failed");
+  };
+  const client = new ControlClient("https://atbash.ai", fetcher);
+  await assert.rejects(
+    client.getSession("session-id", "S".repeat(43)),
+    /Atbash could not be reached\. .*request network access and run it again\./,
+  );
+});
+
+test("a sandbox denial names the access to request; other errors keep their message", () => {
+  const root = join(tmpdir(), "atbash-errors-config");
+  const env = { ATBASH_CONFIG_DIR: root };
+  const denied = (code: string, extra: Record<string, unknown>) =>
+    Object.assign(new Error(`${code}: denied`), { code, ...extra });
+
+  for (const code of ["EPERM", "EACCES", "EROFS"]) {
+    assert.equal(
+      describeControlError(denied(code, { path: join(root, "plans") }), env),
+      `Atbash setup could not write to ${root}. If this command runs in a sandbox, request write access to ${root} and run it again.`,
+      code,
+    );
+  }
+  assert.match(
+    describeControlError(denied("EPERM", { syscall: "listen" }), env),
+    /could not open its local key page\. .*request network access/,
+  );
+  // Outside the configuration directory the raw message stays: it is not ours to explain.
+  assert.equal(
+    describeControlError(denied("EACCES", { path: join(tmpdir(), "elsewhere") }), env),
+    "EACCES: denied",
+  );
+  assert.equal(
+    describeControlError(denied("EACCES", { path: `${root}-other` }), env),
+    "EACCES: denied",
+  );
+  assert.equal(describeControlError(new Error("Invalid job ID."), env), "Invalid job ID.");
+  assert.equal(describeControlError("not an error", env), "Atbash setup failed.");
 });
 
 test("control service requires HTTPS except on loopback", () => {

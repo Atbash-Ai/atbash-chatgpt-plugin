@@ -65,6 +65,8 @@ An agent exists only in the environment it was created in: an agent onboarded on
 
 Invoke `$atbash-setup` in Codex. The skill starts a short-lived onboarding session and provides a Connect Atbash link. Sign in and verify your wallet in the browser, then review and approve the exact account, organization, plan, and agent changes. The helper finishes setup and saves the agent key locally under `~/.config/atbash/` with restricted permissions. For an existing agent, it opens a local form for the key; the key is not sent to the dashboard or chat.
 
+Setup works with the hook trusted. Until an agent is configured, the hook allows only the Atbash setup steps — the helper's setup commands, with the plan passed inline, and plain reads of the setup skill's own files — and denies every other tool call. Once setup activates a profile, every tool call is judged again; `setup continue` reports the new agent's status itself, so no extra judged call is needed. An existing but invalid configuration stays fail closed.
+
 The Connect Atbash URL must be on the service of the installed environment (see [Environments](#environments)). If it is not, the installed snapshot is not the one you expect.
 
 Each new agent starts with a policy preset (Developer, DevOps, or Full baseline). Codex suggests one from the agent's purpose, and you can switch it or customize individual rules on the Connect Atbash review page before approving. It is created as the organization policy "<agent name> Policy" and can be fine-tuned later under Policies in the dashboard.
@@ -79,7 +81,7 @@ On Codex 0.154 or newer, installing the plugin alone does not register its hook.
 node plugins/atbash/runtime/install-hook.cjs
 ```
 
-Run `$atbash-setup` before trusting the hook, because an unconfigured hook denies tool calls. Restart Codex, open `/hooks`, and trust the Atbash `PreToolUse` hook. Then check status:
+Restart Codex, open `/hooks`, and trust the Atbash `PreToolUse` hook. Then check status:
 
 ```bash
 node plugins/atbash/runtime/status.cjs

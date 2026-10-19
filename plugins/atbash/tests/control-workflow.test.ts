@@ -208,6 +208,35 @@ test("start returns only public pairing data and persists helper secrets locally
   assert.match(stored.keyDeliveryPrivateKeyPem, /PRIVATE KEY/);
 });
 
+test("start creates no dashboard session when the configuration directory cannot be written", async () => {
+  // A sandbox that blocks the write must fail start before the dashboard holds
+  // a session nobody can finish.
+  const root = await mkdtemp(join(tmpdir(), "atbash-workflow-"));
+  const store = new ControlStore(root);
+  store.preparePlanDirectory = async () => {
+    throw Object.assign(new Error("permission denied"), { code: "EACCES", path: root });
+  };
+  let sessions = 0;
+  const client = {
+    createSession: async () => {
+      sessions += 1;
+      throw new Error("createSession must not be reached");
+    },
+  };
+
+  await assert.rejects(
+    startControlJob({
+      host: "codex",
+      purpose: "onboard",
+      serviceOrigin: "https://atbash.ai",
+      store,
+      client: client as never,
+    }),
+    /permission denied/,
+  );
+  assert.equal(sessions, 0);
+});
+
 test("completed browser execution activates a host profile and destroys transient authority", async () => {
   const root = await mkdtemp(join(tmpdir(), "atbash-activate-"));
   const store = new ControlStore(root);
