@@ -206,9 +206,10 @@ export async function submitInlineControlPlan(
   } catch {
     // Most often a quoting accident: an apostrophe inside a shell-quoted
     // argument truncates it. Say that rather than reporting a JSON error alone.
+    // Setup mode does not allow writing a plan file, so the fix is an escape.
     throw new Error(
-      "--json was not valid JSON. Pass the whole plan as one quoted argument; " +
-        "if any value contains a quote, write the plan to the job's planPath and use --input instead.",
+      "--json was not valid JSON. Pass the whole plan as one single-quoted argument, " +
+        "and write any single quote inside a value as \\u0027.",
     );
   }
   return submitParsedPlan(jobId, parsed, store);

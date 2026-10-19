@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { createPublicKey, publicEncrypt, type JsonWebKey } from "node:crypto";
-import { mkdtemp } from "node:fs/promises";
+import { mkdtemp, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -176,6 +176,65 @@ test("plans are constrained to the lifecycle supported by each authorization pur
   assert.throws(
     () => validateProposalActionsForPurpose(createAgent, "manage"),
     /exactly one agent update/,
+  );
+});
+
+test("plan errors name the action and the field to fix", () => {
+  const agent = {
+    type: "create_agent",
+    network: "public",
+    organization: "acme_ai",
+    name: "codex dev",
+    purpose: "Coding assistant",
+    risk: "medium",
+    keySource: "generate_in_browser",
+  };
+
+  // An assistant's first attempt left network off every action.
+  assert.throws(() => parseProposalActions({ actions: [{ type: "create_account" }, agent] }), {
+    message:
+      'Plan action 1 (create_account): "network" must be "public" or "private" on every action.',
+  });
+  assert.throws(() => parseProposalActions({ network: "public", actions: [agent] }), {
+    message: "Plan contains unknown fields: network. Allowed fields: actions.",
+  });
+  assert.throws(
+    () =>
+      parseProposalActions({
+        actions: [{ type: "create_organization", network: "public", name: "acme_ai" }, agent],
+      }),
+    { message: "Plan action 1 (create_organization): Organization description is required." },
+  );
+  assert.throws(
+    () =>
+      parseProposalActions({
+        actions: [{ type: "activate_free_plan", network: "public" }, agent],
+      }),
+    { message: "Plan action 1 (activate_free_plan): Organization is required." },
+  );
+  assert.throws(() => parseProposalActions({ actions: [{ ...agent, risk: undefined }] }), {
+    message: "Plan action 1 (create_agent): Agent risk must be low, medium, high, or critical.",
+  });
+  assert.throws(
+    () =>
+      parseProposalActions({ actions: [{ type: "create_account", network: "public", name: "x" }] }),
+    {
+      message:
+        "Plan action 1 (create_account): Plan contains unknown fields: name. Allowed fields: type, network.",
+    },
+  );
+});
+
+test("the setup skill's example plan is accepted as written", async () => {
+  const skill = await readFile("skills/atbash-setup/SKILL.md", "utf8");
+  const example = /```json\r?\n([\s\S]*?)\r?\n```/.exec(skill)?.[1];
+  assert.ok(example, "SKILL.md documents an example plan");
+
+  const actions = parseProposalActions(JSON.parse(example));
+  validateProposalActionsForPurpose(actions, "onboard");
+  assert.deepEqual(
+    actions.map((action) => action.type),
+    ["create_account", "create_organization", "activate_free_plan", "create_agent"],
   );
 });
 
