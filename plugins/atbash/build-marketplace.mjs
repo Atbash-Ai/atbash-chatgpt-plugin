@@ -130,7 +130,10 @@ function lockedNativeEntry(lock, packageName, version, sdkPackage) {
   if (sdkPackage === undefined) return lock.packages[`node_modules/${packageName}`];
   const suffix = `node_modules/${sdkPackage}`;
   const sdkDirs = Object.keys(lock.packages)
-    .filter((key) => (key === suffix || key.endsWith(`/${suffix}`)) && lock.packages[key]?.version === version)
+    .filter(
+      (key) =>
+        (key === suffix || key.endsWith(`/${suffix}`)) && lock.packages[key]?.version === version,
+    )
     .sort();
   for (const sdkDir of sdkDirs) {
     for (const candidate of resolutionCandidates(sdkDir, packageName)) {
