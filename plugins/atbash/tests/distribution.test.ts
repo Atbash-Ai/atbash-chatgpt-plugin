@@ -398,10 +398,21 @@ test("shipped runtime sends only fixed, checked facts in the judge context", () 
     );
     assertCheckedModel(source, bundle);
     assert.doesNotMatch(source, /workspace=/, bundle);
-    // The transcript reader refuses any two leading separators in any mix (security review
-    // 2026-10-19), so a rebuild cannot drop that rule from the shipped hook.
-    if (bundle === "runtime/pre-tool-use-main.cjs") {
-      assert.ok(source.includes("/^[\\\\/]{2}/"), `${bundle}: the network-path check is not the any-mix rule`);
-    }
   }
+});
+
+// Test audit 2026-10-20: the shipped hook is the committed bundle, not src. A stale or partial
+// rebuild that dropped the call-origin sentence, the any-mix network-path rule or the no-link
+// open would leave every src test green; this pins all three in the bundle Codex runs.
+test("shipped runtime carries the call-origin fact and the transcript-read refusals", () => {
+  const source = readFileSync("runtime/pre-tool-use-main.cjs", "utf8");
+  assert.ok(
+    source.includes(
+      "call_origin=tool_output (the instruction for this call appeared in a tool output, not in the user request)",
+    ),
+    "the call-origin sentence is missing from the shipped hook",
+  );
+  assert.ok(source.includes("/^[\\\\/]{2}/"), "the network-path check is not the any-mix rule");
+  assert.ok(source.includes("lstatSync"), "the transcript is not checked with lstat");
+  assert.ok(source.includes("O_NOFOLLOW"), "the transcript open does not refuse a link");
 });
