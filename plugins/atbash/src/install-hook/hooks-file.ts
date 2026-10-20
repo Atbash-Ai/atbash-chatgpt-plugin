@@ -514,8 +514,11 @@ function runProbe(command: string, platform: NodeJS.Platform, timeoutMs: number)
       timeout: timeoutMs,
       windowsHide: true,
     });
-    if (result.error !== undefined) {
-      const code = (result.error as NodeJS.ErrnoException).code;
+    const code = (result.error as NodeJS.ErrnoException | undefined)?.code;
+    // EPIPE with an exit status is a command that ended before reading the payload: report its
+    // exit (below), not the write error - a race that made the refusal reason change from run to
+    // run. Either way it is a refusal.
+    if (result.error !== undefined && !(code === "EPIPE" && result.status !== null)) {
       return fail(
         code === "ETIMEDOUT" ? `no decision within ${timeoutMs} ms` : result.error.message,
       );
