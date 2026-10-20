@@ -1773,6 +1773,33 @@ test("install-hook: a deny the host could not read as UTF-8 is refused", () => {
   }
 });
 
+test("install-hook: a deny carrying an invalid UTF-8 byte is refused", () => {
+  // Governor review 2026-10-20: "strictly UTF-8" must mean it. A lenient decode turns the bad byte
+  // into U+FFFD and parses a deny a strict host reader would reject.
+  const home = tempHome();
+  try {
+    const script = join(home, "bad-byte-deny.cjs");
+    const deny = JSON.stringify({
+      hookSpecificOutput: {
+        hookEventName: "PreToolUse",
+        permissionDecision: "deny",
+        permissionDecisionReason: "x_y",
+      },
+    });
+    const [head, tail] = deny.split("_");
+    writeFileSync(
+      script,
+      `process.stdout.write(Buffer.concat([Buffer.from(${JSON.stringify(head)}), Buffer.from([0xff]), Buffer.from(${JSON.stringify(tail)})]));\n`,
+    );
+    assert.throws(
+      () => probeRegisteredCommand(scriptEntry(realpathSync(script)), process.platform),
+      /could not be executed by the host shell: stdout is not UTF-8/,
+    );
+  } finally {
+    rmSync(home, { force: true, recursive: true });
+  }
+});
+
 test("install-hook: the probe never sees the operator's home, config or working directory", () => {
   // The probe's hook runs in a fresh, private folder that is both its home and its working
   // directory, holds no Atbash config, and has no Atbash key or config variable. (Not "empty":
