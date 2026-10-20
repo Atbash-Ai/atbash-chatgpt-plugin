@@ -386,11 +386,23 @@ function annotatedRequest(text: string): string[] {
 const RELAY_HEADER = /^Message Type: [^\n]*\n/;
 
 /**
+ * Codex's local compaction stores the model's own summary of the session as a user-role message
+ * opening with a fixed prefix (codex-rs prompts/templates/compact/summary_prefix.md; before it, the
+ * history bridge in core/templates/compact/history_bridge.md). The model writes it, and an injection
+ * can steer it, so it is never the user's words (security review 2026-10-04). The bridge also quotes
+ * the user's earlier messages; dropping them only tightens.
+ */
+const COMPACTION_PREFIXES = [
+  "Another language model started to solve this problem",
+  "You were originally given instructions from a user over one or more turns",
+];
+
+/**
  * One text part of a user-role message. Codex puts its own context into user-role messages too:
  * page content the agent read is untrusted; AGENTS.md instructions and other `<...>` harness blocks
  * (environment, heartbeat, goals) are neither the user's words nor tool output, and are ignored, as
  * Claude Code's `isMeta` notes are. Quoted annotations and relayed agent tasks are not the user's
- * either. Everything else is what the user typed.
+ * either, and neither is a compaction summary. Everything else is what the user typed.
  */
 function userPart(text: string, user: string[], untrusted: string[]): void {
   const head = text.slice(0, 256).trimStart();
@@ -398,6 +410,7 @@ function userPart(text: string, user: string[], untrusted: string[]): void {
   else if (head.startsWith(USER_REPLY_BLOCK)) user.push(...replyAnswers(text));
   else if (head.startsWith(ANNOTATIONS_HEADING)) user.push(...annotatedRequest(text));
   else if (RELAY_HEADER.test(head)) return;
+  else if (COMPACTION_PREFIXES.some((prefix) => head.startsWith(prefix))) return;
   else if (!head.startsWith("<") && !head.startsWith("# AGENTS.md instructions")) user.push(text);
 }
 
