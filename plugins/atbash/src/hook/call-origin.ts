@@ -465,6 +465,9 @@ function readItem(item: unknown, user: string[], untrusted: string[]): void {
  * (`{ type: "response_item", payload }`) and the older top-level shape. Malformed lines (including
  * a first line cut by the tail read) are skipped.
  */
+// Shorter than any line Codex writes (its timestamp field alone is 39 characters).
+const MIN_ENTRY_CHARS = 32;
+
 export function splitTranscript(
   lines: readonly string[],
   sessionMarkers: readonly string[] = [],
@@ -472,7 +475,13 @@ export function splitTranscript(
   const user: string[] = [];
   const untrusted: string[] = [];
   let touchesSession = false;
-  for (const line of lines) {
+  for (const [index, line] of lines.entries()) {
+    // Every line Codex writes is longer than this (its timestamp alone is 39 characters), so a
+    // shorter one is skipped unparsed: a 2 MiB tail of tiny lines stays linear and cheap
+    // (governor review 2026-10-20). Codex never writes such a line, so only garbage or a forged line
+    // is dropped, and a dropped line can only remove words from what counts as the user's. The cut
+    // first line is still scanned below for the session's markers.
+    if (line.length < MIN_ENTRY_CHARS && index > 0) continue;
     // One malformed or pathological line is skipped; it never discards the rest of the transcript.
     try {
       const entry: unknown = JSON.parse(line);
@@ -514,7 +523,7 @@ export function splitTranscript(
       // session is still seen: the raw fragment is scanned for the markers (tighten-only).
       if (
         lines.length > 0 &&
-        line === lines[0] &&
+        index === 0 &&
         !touchesSession &&
         sessionMarkers.length > 0 &&
         namesSession(line, sessionMarkers)
@@ -581,7 +590,12 @@ function namesSession(text: string, markers: readonly string[]): boolean {
 /**
  * A tail call item with its arguments decoded: a function call's `arguments` is itself a JSON string,
  * so an escape the model wrote inside it (the dot of ".codex" as a unicode escape) survives in the
- * raw line. Parsing it and serialising the result again spells every such character plainly.
+ * raw line. Unicode escapes are spelled plainly; every other JSON escape is a backslash before the
+ * character itself, which namesSession already reads as a separator.
+ *
+ * Governor review 2026-10-20 (LOW): this was a parse and re-serialisation of every tail call, which
+ * took about a second on deeply nested arguments before the rule's budget starts. One linear
+ * replace decodes the same characters.
  */
 function decodedCallText(item: Record<string, unknown>): string {
   const parts: string[] = [];
@@ -589,14 +603,16 @@ function decodedCallText(item: Record<string, unknown>): string {
     const value = item[key];
     if (typeof value === "string") {
       parts.push(value);
-      try {
-        parts.push(JSON.stringify(JSON.parse(value)) ?? "");
-      } catch {
-        // not JSON: the plain string above is what the call said
-      }
+      if (value.includes("\\u")) parts.push(decodeUnicodeEscapes(value));
     } else if (value !== undefined) parts.push(callText(value));
   }
   return parts.join("\n");
+}
+
+function decodeUnicodeEscapes(text: string): string {
+  return text.replace(/\\u([0-9a-fA-F]{4})/g, (_, hex: string) =>
+    String.fromCharCode(Number.parseInt(hex, 16)),
+  );
 }
 
 /** The call's arguments as one string; anything that cannot be serialised is empty. */
