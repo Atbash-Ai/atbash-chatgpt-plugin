@@ -148,8 +148,10 @@ export function resolveHookScript(runtimeDir: string, platform: NodeJS.Platform)
 
 /** The PreToolUse entry Codex runs: the same shape as the plugin's hooks/hooks.json, with the
  *  `$PLUGIN_ROOT` placeholder replaced by the real absolute path and the bare `node` replaced by
- *  the absolute interpreter. On Windows `command` carries both paths with forward slashes (node
- *  accepts them) and `commandWindows` the backslash form; on POSIX the paths are used as they are. */
+ *  the absolute interpreter. On Windows `command` and `commandWindows` are the same backslash
+ *  spelling: Codex documents `commandWindows` as the Windows override, but a host that ran
+ *  `command` instead must get a spelling PowerShell answers (the forward-slash spelling can hang
+ *  there, see probeRegisteredCommand). On POSIX the paths are used as they are. */
 export function buildAtbashEntry(
   hookScript: string,
   platform: NodeJS.Platform,
@@ -157,18 +159,16 @@ export function buildAtbashEntry(
 ): AtbashMatcherGroup {
   validateHookScriptPath(hookScript, platform);
   validateHookScriptPath(interpreter, platform, "node interpreter path");
-  const forward = (path: string) => (platform === "win32" ? path.replaceAll("\\", "/") : path);
-  const backward = (path: string) => path.replaceAll("/", "\\");
+  const windows = (path: string) => path.replaceAll("/", "\\");
   // PowerShell needs the call operator to run a quoted program path; sh must not get one.
-  const call = platform === "win32" ? "& " : "";
+  const command =
+    platform === "win32"
+      ? `& "${windows(interpreter)}" "${windows(hookScript)}"`
+      : `"${interpreter}" "${hookScript}"`;
   const hook: AtbashCommandHook = {
     type: "command",
-    command: `${call}"${forward(interpreter)}" "${forward(hookScript)}"`,
-    ...(platform === "win32"
-      ? {
-          commandWindows: `${call}"${backward(forward(interpreter))}" "${backward(forward(hookScript))}"`,
-        }
-      : {}),
+    command,
+    ...(platform === "win32" ? { commandWindows: command } : {}),
     timeout: HOOK_TIMEOUT_SECONDS,
     statusMessage: HOOK_STATUS_MESSAGE,
   };
@@ -434,17 +434,16 @@ export function windowsPowerShellPath(env: Readonly<Record<string, string | unde
 }
 
 /** Run the registered command string exactly as the host would - Windows PowerShell
- *  (`-NoProfile -NonInteractive -Command`) with `commandWindows` on win32, `/bin/sh -c` with
- *  `command` elsewhere - with the synthetic payload on stdin and an environment that has no
- *  PATH, no reachable home configuration and no Atbash configuration. Only the spelling the
- *  host runs on this platform is probed (the same spelling `spawnableCommand` judges): the
- *  POSIX `command` string is never executed by a Windows host, and running it through
- *  PowerShell can hang before the hook starts - PowerShell does not return from invoking
- *  some interpreter paths in their forward-slash spelling (measured with an fnm-installed
- *  node: the backslash spelling answers in seconds, the forward-slash spelling never
- *  answers), which made the probe refuse healthy registrations. Anything but exit 0 and one
- *  deny decision on stdout is a refusal: a string the shell cannot execute would be a hook that
- *  never answers, and the host proceeds. */
+ *  (`-NoProfile -NonInteractive -Command`) on win32, `/bin/sh -c` elsewhere - with the synthetic
+ *  payload on stdin and an environment that has no PATH, no reachable home configuration and no
+ *  Atbash configuration. On win32 every distinct spelling a host could run is probed
+ *  (`commandWindows`, the documented Windows override, and `command`): the installer writes one
+ *  backslash spelling into both, so that is one run; a hand-edited entry whose spellings differ
+ *  must answer in both. The backslash spelling matters: PowerShell does not return from invoking
+ *  some interpreter paths in their forward-slash spelling (measured with an fnm-installed node:
+ *  the backslash spelling answers in seconds, the forward-slash spelling never answers). Anything
+ *  but exit 0 and one UTF-8 deny decision on stdout is a refusal: a string the shell cannot
+ *  execute would be a hook that never answers, and the host proceeds. */
 export function probeRegisteredCommand(
   entry: AtbashMatcherGroup,
   platform: NodeJS.Platform,
@@ -456,14 +455,18 @@ export function probeRegisteredCommand(
       "the registered command could not be executed by the host shell: the entry has no hook",
     );
   }
-  const commands = platform === "win32" ? [hook.commandWindows ?? hook.command] : [hook.command];
+  const commands =
+    platform === "win32"
+      ? [...new Set([hook.commandWindows ?? hook.command, hook.command])]
+      : [hook.command];
   for (const command of commands) runProbe(command, platform, timeoutMs);
 }
 
-/** Decode probe output captured as bytes. Windows PowerShell 5.1 writes its startup errors as
- *  UTF-16LE, which a UTF-8 decode turns into NUL-separated garbage; real UTF-8 output (node,
- *  `/bin/sh`) contains no NUL bytes, so their presence selects the decoding. */
-function decodeProbeOutput(bytes: Buffer | null): string {
+/** Decode the shell's stderr for a refusal message. Windows PowerShell 5.1 writes its startup
+ *  errors as UTF-16LE, which a UTF-8 decode turns into NUL-separated garbage; real UTF-8 output
+ *  (node, `/bin/sh`) contains no NUL bytes, so their presence selects the decoding. Only stderr:
+ *  stdout is read strictly as UTF-8, as the host reads it. */
+function decodeStderr(bytes: Buffer | null): string {
   if (bytes === null || bytes.length === 0) return "";
   return bytes.includes(0) ? bytes.toString("utf16le") : bytes.toString("utf8");
 }
@@ -500,15 +503,14 @@ function runProbe(command: string, platform: NodeJS.Platform, timeoutMs: number)
     platform === "win32"
       ? [windowsPowerShellPath(process.env), ["-NoProfile", "-NonInteractive", "-Command", command]]
       : ["/bin/sh", ["-c", command]];
-  // A neutral working directory: with the home pointed at the scratch directory a relative
-  // config lookup would otherwise resolve against whatever directory the installer was
-  // started from.
+  // The working directory is the private scratch folder too: a relative lookup the hook makes
+  // (the payload's cwd is ".") must not land in the shared, world-writable temp root.
   try {
     const result = spawnSync(shell, args, {
       input: JSON.stringify(PROBE_PAYLOAD),
       encoding: null,
       env,
-      cwd: tmpdir(),
+      cwd: scratchHome,
       timeout: timeoutMs,
       windowsHide: true,
     });
@@ -519,14 +521,18 @@ function runProbe(command: string, platform: NodeJS.Platform, timeoutMs: number)
       );
     }
     if (result.status !== 0) {
-      const detail = decodeProbeOutput(result.stderr).trim().split(/\r?\n/)[0]?.slice(0, 200) ?? "";
+      const detail = decodeStderr(result.stderr).trim().split(/\r?\n/)[0]?.slice(0, 200) ?? "";
       return fail(
         `exit ${result.status ?? `signal ${result.signal ?? "unknown"}`}${detail === "" ? "" : ` (${detail})`}`,
       );
     }
+    // The host parses stdout as UTF-8: output it could not read (a NUL byte, UTF-16) is a hook
+    // that never answers, so the probe refuses it too.
+    const stdout = result.stdout ?? Buffer.alloc(0);
+    if (stdout.includes(0)) return fail("stdout is not UTF-8");
     let decision: unknown;
     try {
-      decision = JSON.parse(decodeProbeOutput(result.stdout).trim());
+      decision = JSON.parse(stdout.toString("utf8").trim());
     } catch {
       return fail("stdout is not one JSON object");
     }
@@ -541,7 +547,13 @@ function runProbe(command: string, platform: NodeJS.Platform, timeoutMs: number)
       );
     }
   } finally {
-    rmSync(scratchHome, { force: true, recursive: true });
+    // A cleanup error must not replace the probe's own answer: after a timeout the hook's node
+    // can still hold a handle in the folder for a moment (EBUSY on Windows).
+    try {
+      rmSync(scratchHome, { force: true, recursive: true, maxRetries: 3 });
+    } catch {
+      // an empty folder left in the temp directory; the probe's result stands
+    }
   }
 }
 

@@ -186,7 +186,8 @@ test("install-hook: the entry names the plugin's real absolute hook path, forwar
     ],
   });
 
-  // Windows: forward slashes in `command`, the backslash spelling in `commandWindows`.
+  // Windows: the one backslash spelling in both `command` and `commandWindows` (a host that runs
+  // `command` must get a spelling PowerShell answers; security review 2026-10-20).
   const windows = buildAtbashEntry(
     "C:\\Users\\dev\\New folder (3)\\runtime\\pre-tool-use.cjs",
     "win32",
@@ -195,7 +196,7 @@ test("install-hook: the entry names the plugin's real absolute hook path, forwar
   assert.deepEqual(windows.hooks[0], {
     type: "command",
     command:
-      '& "C:/Program Files/nodejs/node.exe" "C:/Users/dev/New folder (3)/runtime/pre-tool-use.cjs"',
+      '& "C:\\Program Files\\nodejs\\node.exe" "C:\\Users\\dev\\New folder (3)\\runtime\\pre-tool-use.cjs"',
     commandWindows:
       '& "C:\\Program Files\\nodejs\\node.exe" "C:\\Users\\dev\\New folder (3)\\runtime\\pre-tool-use.cjs"',
     timeout: HOOK_TIMEOUT_SECONDS,
@@ -335,7 +336,7 @@ test("install-hook: a hook path containing shell metacharacters or a backslash o
   );
   assert.equal(
     buildAtbashEntry("C:\\x\\runtime\\pre-tool-use.cjs", "win32", WIN32_NODE).hooks[0]?.command,
-    '& "C:/Program Files/nodejs/node.exe" "C:/x/runtime/pre-tool-use.cjs"',
+    String.raw`& "C:\Program Files\nodejs\node.exe" "C:\x\runtime\pre-tool-use.cjs"`,
   );
 
   // Real plugin directories whose names a shell would interpret: the installer that lives there
