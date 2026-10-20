@@ -147,6 +147,20 @@ test("build: a native file reached through a linked folder that leaves the packa
   }
 });
 
+// Test audit 2026-10-20: a native file whose real location cannot be resolved (a dangling link, a
+// path that is gone) must be refused as leaving the package on every platform, not surface as a raw
+// ENOENT. Linux CI otherwise never reaches this branch: only Windows tar writes unresolvable links.
+test("build: a native file whose real location cannot be resolved is refused as leaving the package", () => {
+  const dir = mkdtempSync(join(tmpdir(), "atbash-build-unresolvable-"));
+  try {
+    mkdirSync(join(dir, "package"), { recursive: true });
+    const missing = join(dir, "package", "gone", "x.node");
+    assert.throws(() => helpers.assertInsidePackage(dir, missing), /leaves the package/);
+  } finally {
+    rmSync(dir, { force: true, recursive: true });
+  }
+});
+
 // Security review 2026-10-04 (LOW): the native packages were packed by name and version and never
 // compared with the lockfile, so a republished or substituted tarball would have been committed.
 test("build: a packed native package must match the lockfile's integrity for that exact version", () => {
@@ -186,6 +200,8 @@ test("build: every native package of every environment resolves to its real lock
   const environments = JSON.parse(
     readFileSync(join(pluginRoot, "build-environments.json"), "utf8"),
   ) as Record<string, { sdkPackage: string }>;
+  // Both shipped environments must be checked: an emptied file must not pass by checking nothing.
+  assert.ok(environments.prod && environments.dev, "build-environments.json lost prod or dev");
   const dependencies = JSON.parse(readFileSync(join(pluginRoot, "package.json"), "utf8")) as {
     dependencies?: Record<string, string>;
     devDependencies?: Record<string, string>;
