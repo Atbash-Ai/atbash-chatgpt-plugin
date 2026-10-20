@@ -10,7 +10,7 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { performance } from "node:perf_hooks";
@@ -353,6 +353,29 @@ test("only an absolute, local, regular file is read as the transcript", () => {
       "a // network path",
     );
     assert.ok(Date.now() - started < 1000, "network paths are refused before any connection");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// Security review 2026-10-19 (LOW): the hook runs outside the Codex sandbox, so a rollout file
+// replaced by a link to \\attacker\share\x.jsonl would make it open an SMB connection (and offer
+// NTLM credentials). Codex writes a plain file, so a link is never followed, even to a local file.
+test("a transcript path that is a link is not followed", (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "atbash-call-origin-"));
+  try {
+    const file = join(dir, "t.jsonl");
+    writeFileSync(file, userLine("Hello there.") + "\n");
+    assert.notEqual(readTranscriptTail(file), null, "the plain file is read");
+    const link = join(dir, "link.jsonl");
+    try {
+      symlinkSync(file, link, "file");
+    } catch (error) {
+      // Windows without Developer Mode or admin cannot create symlinks; Linux CI runs this.
+      t.skip(`cannot create a symlink here: ${(error as NodeJS.ErrnoException).code}`);
+      return;
+    }
+    assert.equal(readTranscriptTail(link), null, "a link to a readable local file was followed");
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
