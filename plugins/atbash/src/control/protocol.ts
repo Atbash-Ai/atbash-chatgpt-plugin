@@ -70,6 +70,8 @@ export interface SetupInventory {
     jailed: boolean;
   }>;
   unavailableNetworks: ControlNetwork[];
+  /** The networks this Atbash deployment serves; absent from older dashboards. */
+  availableNetworks?: ControlNetwork[];
 }
 
 // Starting policies the dashboard can create for a new agent; must match the
@@ -85,7 +87,7 @@ export interface AgentPolicy {
 export type ProposalAction =
   | { type: "create_account"; network: ControlNetwork }
   | { type: "create_organization"; network: ControlNetwork; name: string; description: string }
-  | { type: "activate_free_plan"; network: "public"; organization: string }
+  | { type: "activate_free_plan"; network: ControlNetwork; organization: string }
   | {
       type: "create_agent";
       network: ControlNetwork;
@@ -249,11 +251,10 @@ function parseAction(value: unknown): ProposalAction {
   }
   if (row.type === "activate_free_plan") {
     exactKeys(row, ["type", "network", "organization"]);
-    if (row.network !== "public")
-      throw new Error("The Free plan is available only on the public network.");
+    // The dashboard decides which network a deployment's Free plan lives on.
     return {
       type: row.type,
-      network: row.network,
+      network: network(row.network),
       organization: planText(row.organization, "Organization", 64),
     };
   }

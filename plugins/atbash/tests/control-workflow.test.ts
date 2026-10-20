@@ -225,6 +225,22 @@ test("plan errors name the action and the field to fix", () => {
   );
 });
 
+test("the Free plan follows the plan's network; the dashboard decides where it lives", () => {
+  const actions = parseProposalActions({
+    actions: [
+      { type: "create_account", network: "private" },
+      { type: "create_organization", network: "private", name: "acme_ai", description: "Acme" },
+      { type: "activate_free_plan", network: "private", organization: "acme_ai" },
+    ],
+  });
+
+  assert.deepEqual(actions[2], {
+    type: "activate_free_plan",
+    network: "private",
+    organization: "acme_ai",
+  });
+});
+
 test("the setup skill's example plan is accepted as written", async () => {
   const skill = await readFile("skills/atbash-setup/SKILL.md", "utf8");
   const example = /```json\r?\n([\s\S]*?)\r?\n```/.exec(skill)?.[1];
