@@ -104,6 +104,13 @@ npm run build:marketplace       # regenerate runtime/ for main
 
 `build:marketplace` regenerates the committed universal runtime from the exact npm SDK version of the selected environment and downloads its supported native packages. Commit the regenerated `plugins/atbash/runtime/` whenever source or SDK versions change: a development build on `dev`, a production build on `main`.
 
+The build refuses a native package it cannot vouch for, and then leaves `runtime/` untouched:
+
+- **It must match the lockfile.** Each packed native package must match the version and the integrity hash that `package-lock.json` records for it. The entry is found the way Node resolves it from the SDK being built: nested under an aliased SDK such as `@atbash/sdk-dev`, or under the plugin's own `node_modules` for the production SDK.
+- **It must stay inside its package.** A native file whose real location (all links resolved) is outside its package folder is refused.
+
+If the build stops with "does not match the lockfile" or "is not in the lockfile", run `npm ci` and build again. Never edit the lockfile by hand to make the build pass.
+
 How the build picks an environment:
 
 - `plugins/atbash/build-environments.json` is the single source of truth. `prod` uses the stable SDK with no overrides. `dev` uses the development SDK and pins its service endpoint and chains.
