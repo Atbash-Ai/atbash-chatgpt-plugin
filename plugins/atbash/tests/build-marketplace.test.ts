@@ -193,6 +193,8 @@ function withPluginCopy(
           : `node_modules/${sdkPackage}/node_modules/${name}`;
       packages[key] = { version: sdkVersion, integrity };
     }
+    // The SDK's own entry, which a real lockfile always has: the natives are resolved from it.
+    packages[`node_modules/${sdkPackage}`] = { version: sdkVersion, integrity: "sha512-sdk" };
     writeFileSync(join(dir, "package-lock.json"), JSON.stringify({ lockfileVersion: 3, packages }));
     fn(copy, env);
   } finally {
