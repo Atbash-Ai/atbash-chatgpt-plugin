@@ -468,6 +468,26 @@ function readItem(item: unknown, user: string[], untrusted: string[]): void {
 // Shorter than any line Codex writes (its timestamp field alone is 39 characters).
 const MIN_ENTRY_CHARS = 32;
 
+/**
+ * The tail's lines, in one linear scan. Lines shorter than MIN_ENTRY_CHARS are passed over without
+ * being cut out as strings, so a tail of hundreds of thousands of tiny lines costs one scan (governor
+ * review 2026-10-20). The first line, which the tail read may have cut, is always kept: splitTranscript
+ * scans it for the session's markers.
+ */
+function tailLines(text: string): string[] {
+  const lines: string[] = [];
+  let start = 0;
+  while (start <= text.length) {
+    const newline = text.indexOf("\n", start);
+    const end = newline === -1 ? text.length : newline;
+    const lineEnd = end > start && text.charCodeAt(end - 1) === 13 ? end - 1 : end;
+    if (start === 0 || lineEnd - start >= MIN_ENTRY_CHARS) lines.push(text.slice(start, lineEnd));
+    if (newline === -1) break;
+    start = newline + 1;
+  }
+  return lines;
+}
+
 export function splitTranscript(
   lines: readonly string[],
   sessionMarkers: readonly string[] = [],
@@ -660,7 +680,7 @@ export function readTranscriptTail(
     const buffer = Buffer.alloc(length);
     const bytesRead = readSync(fd, buffer, 0, length, stat.size - length);
     return splitTranscript(
-      buffer.subarray(0, bytesRead).toString("utf8").split(/\r?\n/),
+      tailLines(buffer.subarray(0, bytesRead).toString("utf8")),
       sessionMarkersFor(path),
     );
   } catch {
