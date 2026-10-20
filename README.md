@@ -92,6 +92,7 @@ The commands above assume you are in the repository checkout. From an installed 
 The guard allows only an SDK `ALLOW` decision with `allow: true`. `HOLD`, `BLOCK`, invalid configuration, and service errors deny the pending call. Enforcement covers tool calls exposed to the host's `PreToolUse` hook.
 
 Register the hook with the installer above. The plugin's bundled `hooks/hooks.json` entry runs a bare `node` and a `$PLUGIN_ROOT` placeholder: it depends on `node` being on the host's PATH and on `PLUGIN_ROOT` being exported by the host, so it is not a gate on its own.
+
 ## What the hook sends
 
 With each tool call the hook sends the tool name, its arguments (secrets redacted by the SDK) and a short context: `source=codex`, the model and the permission mode.

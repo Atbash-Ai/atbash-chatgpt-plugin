@@ -76,6 +76,8 @@ function expectedTarget(directory: "dist" | "runtime"): {
       : environments[process.env.ATBASH_BUILD_ENV?.trim() || "prod"];
   assert.ok(environment, `${directory} was built for an unknown environment`);
   return { endpoint: environment.endpoint ?? PRODUCTION_ENDPOINT, chains: environment.chains };
+}
+
 /** The bundles that carry the hook's context builder. */
 const BUNDLES = ["runtime/pre-tool-use-main.cjs", "runtime/index.cjs"];
 
@@ -383,6 +385,9 @@ test("bundled SDK uses its environment's BRIDs and node pools for defaults and o
       },
     );
     assert.equal(result.status, 0, `${directory}: ${result.stderr}`);
+  }
+});
+
 test("shipped runtime sends only fixed, checked facts in the judge context", () => {
   // Codex runs the committed runtime, not src, and the judge context is recorded on a public
   // chain. The builder is pinned, so the check is not vacuous: source, the checked model (any AWS
