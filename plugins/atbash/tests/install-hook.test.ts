@@ -59,6 +59,7 @@ import {
   verifyEntryRoundTrip,
   writeHooksFileAtomically,
   type AtbashIdentity,
+  type AtbashMatcherGroup,
 } from "../src/install-hook/hooks-file.js";
 
 // dist-tests/tests -> plugins/atbash/runtime: the committed runtime, where the installer ships.
@@ -1681,6 +1682,159 @@ test("install-hook: a project hooks.json that links outside the project is refus
     );
     assert.equal(existsSync(join(elsewhere, "hooks.json")), false, "the link target was written");
     assert.deepEqual(readdirSync(elsewhere), []);
+  } finally {
+    rmSync(home, { force: true, recursive: true });
+  }
+});
+
+// Security review 2026-10-20 of the #13 re-cut: the probe's own guarantees, each pinned.
+
+/** A probe entry whose command (every spelling) runs `script` with the real interpreter. */
+function scriptEntry(script: string): AtbashMatcherGroup {
+  const entry = buildAtbashEntry(REAL_HOOK_SCRIPT, process.platform, NODE_PATH);
+  const command = WIN32 ? `& "${NODE_PATH}" "${script}"` : `"${NODE_PATH}" "${script}"`;
+  return {
+    ...entry,
+    hooks: [{ ...entry.hooks[0]!, command, ...(WIN32 ? { commandWindows: command } : {}) }],
+  };
+}
+
+const DENY_JSON = JSON.stringify({
+  hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "deny" },
+});
+
+test("install-hook: on win32 both registered spellings are the one backslash spelling PowerShell answers", () => {
+  // A host that ran `command` instead of the documented `commandWindows` must still get a
+  // spelling PowerShell answers: the forward-slash spelling can hang there.
+  const hook = buildAtbashEntry(
+    String.raw`C:\Users\dev\New folder (3)\runtime\pre-tool-use.cjs`,
+    "win32",
+    WIN32_NODE,
+  ).hooks[0]!;
+  assert.equal(hook.command, hook.commandWindows);
+  assert.equal(
+    hook.command,
+    String.raw`& "C:\Program Files\nodejs\node.exe" "C:\Users\dev\New folder (3)\runtime\pre-tool-use.cjs"`,
+  );
+});
+
+test("install-hook: every distinct spelling the host could run must answer the probe", () => {
+  // A hand-edited entry whose `command` cannot run, beside a `commandWindows` that answers: on
+  // win32 a host that runs `command` would wait out its timeout and proceed, so the entry is
+  // refused; on POSIX `command` is the one spelling, and it is refused too.
+  const home = tempHome();
+  try {
+    // `commandWindows` runs a script that denies at once, so only `command` can fail the probe.
+    const deny = join(home, "deny.cjs");
+    writeFileSync(deny, `process.stdout.write(${JSON.stringify(DENY_JSON)});\n`);
+    const answers = scriptEntry(realpathSync(deny));
+    const fakeNode = join(home, "fake-node");
+    writeFileSync(fakeNode, "not a program\n");
+    const mixed = {
+      ...answers,
+      hooks: [
+        {
+          ...answers.hooks[0]!,
+          command: `${CALL}"${realpathSync(fakeNode)}" "${realpathSync(deny)}"`,
+        },
+      ],
+    };
+    probeRegisteredCommand(answers, process.platform);
+    assert.throws(
+      () => probeRegisteredCommand(mixed, process.platform),
+      /could not be executed by the host shell: (exit \d+|stdout is not one JSON object)/,
+    );
+  } finally {
+    rmSync(home, { force: true, recursive: true });
+  }
+});
+
+test("install-hook: a deny the host could not read as UTF-8 is refused", () => {
+  // The host parses stdout as UTF-8; a UTF-16 deny is output it cannot use, a hook that never
+  // answers.
+  const home = tempHome();
+  try {
+    const script = join(home, "utf16-deny.cjs");
+    writeFileSync(
+      script,
+      `process.stdout.write(Buffer.from(${JSON.stringify(DENY_JSON)}, "utf16le"));\n`,
+    );
+    assert.throws(
+      () => probeRegisteredCommand(scriptEntry(realpathSync(script)), process.platform),
+      /could not be executed by the host shell: stdout is not UTF-8/,
+    );
+    // The same deny in UTF-8 passes: the refusal is about the encoding, not the decision.
+    const utf8 = join(home, "utf8-deny.cjs");
+    writeFileSync(utf8, `process.stdout.write(${JSON.stringify(DENY_JSON)});\n`);
+    probeRegisteredCommand(scriptEntry(realpathSync(utf8)), process.platform);
+  } finally {
+    rmSync(home, { force: true, recursive: true });
+  }
+});
+
+test("install-hook: the probe never sees the operator's home, config or working directory", () => {
+  // The probe's hook runs in a fresh, private folder that is both its home and its working
+  // directory, holds no Atbash config, and has no Atbash key or config variable. (Not "empty":
+  // Windows PowerShell creates AppData in the home it is given.) The script answers deny only when
+  // all of that holds, so a probe that leaked the operator's environment is refused. The
+  // operator's home here holds a real-shaped config with an agent key.
+  const operator = tempHome();
+  const saved = {
+    HOME: process.env.HOME,
+    USERPROFILE: process.env.USERPROFILE,
+    ATBASH_AGENT_KEY: process.env.ATBASH_AGENT_KEY,
+  };
+  try {
+    mkdirSync(join(operator, ".config", "atbash"), { recursive: true });
+    writeFileSync(
+      join(operator, ".config", "atbash", "config.json"),
+      '{"agentKey":"not-a-real-key"}\n',
+    );
+    process.env.HOME = operator;
+    process.env.USERPROFILE = operator;
+    process.env.ATBASH_AGENT_KEY = "not-a-real-key";
+    const script = join(operator, "isolation.cjs");
+    writeFileSync(
+      script,
+      [
+        'const fs = require("node:fs"), os = require("node:os"), path = require("node:path");',
+        "const real = (p) => { try { return fs.realpathSync.native(p).toLowerCase(); } catch { return null; } };",
+        "const home = os.homedir();",
+        'const noConfig = !fs.existsSync(path.join(home, ".config", "atbash"));',
+        `const operator = ${JSON.stringify(realpathSync.native(operator).toLowerCase())};`,
+        "const isolated = noConfig && real(home) !== operator && real(process.cwd()) === real(home) &&",
+        "  !Object.keys(process.env).some((k) => /^ATBASH_(AGENT_KEY|CONFIG_DIR)$/i.test(k));",
+        `process.stdout.write(isolated ? ${JSON.stringify(DENY_JSON)} : JSON.stringify({ hookSpecificOutput: { permissionDecision: "allow" } }));`,
+        "",
+      ].join("\n"),
+    );
+    probeRegisteredCommand(scriptEntry(realpathSync(script)), process.platform);
+  } finally {
+    for (const [name, value] of Object.entries(saved)) {
+      if (value === undefined) delete process.env[name];
+      else process.env[name] = value;
+    }
+    rmSync(operator, { force: true, recursive: true });
+  }
+});
+
+test("install-hook: the probe's scratch folder is removed after a pass and after a refusal", () => {
+  const scratch = () =>
+    readdirSync(tmpdir())
+      .filter((name) => name.startsWith("atbash-probe-home-"))
+      .sort();
+  const before = scratch();
+  const home = tempHome();
+  try {
+    const deny = join(home, "deny.cjs");
+    writeFileSync(deny, `process.stdout.write(${JSON.stringify(DENY_JSON)});\n`);
+    probeRegisteredCommand(scriptEntry(realpathSync(deny)), process.platform);
+    const silent = join(home, "silent.cjs");
+    writeFileSync(silent, "\n");
+    assert.throws(() =>
+      probeRegisteredCommand(scriptEntry(realpathSync(silent)), process.platform),
+    );
+    assert.deepEqual(scratch(), before, "no atbash-probe-home-* folder left behind");
   } finally {
     rmSync(home, { force: true, recursive: true });
   }
