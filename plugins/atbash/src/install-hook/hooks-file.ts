@@ -529,10 +529,17 @@ function runProbe(command: string, platform: NodeJS.Platform, timeoutMs: number)
     // The host parses stdout as UTF-8: output it could not read (a NUL byte, UTF-16) is a hook
     // that never answers, so the probe refuses it too.
     const stdout = result.stdout ?? Buffer.alloc(0);
-    if (stdout.includes(0)) return fail("stdout is not UTF-8");
+    let text: string;
+    try {
+      // fatal: an invalid byte is a refusal, never a U+FFFD that still parses as a deny.
+      text = new TextDecoder("utf-8", { fatal: true }).decode(stdout);
+    } catch {
+      return fail("stdout is not UTF-8");
+    }
+    if (text.includes("\u0000")) return fail("stdout is not UTF-8");
     let decision: unknown;
     try {
-      decision = JSON.parse(stdout.toString("utf8").trim());
+      decision = JSON.parse(text.trim());
     } catch {
       return fail("stdout is not one JSON object");
     }
