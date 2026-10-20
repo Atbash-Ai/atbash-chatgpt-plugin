@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, join, resolve } from "node:path";
 import test from "node:test";
@@ -162,6 +162,48 @@ test("build: a packed native package must match the lockfile's integrity for tha
     /not in the lockfile/,
   );
   assert.throws(() => helpers.assertLockedIntegrity(null, name, "1.2.3", integrity), /lockfile/);
+});
+
+// Security review 2026-10-19 (MEDIUM): the lookup assumed every SDK sits at the repository root,
+// but npm installs the production SDK (and its natives) under plugins/atbash/node_modules, so the
+// default prod build refused every native package. This runs the check against the repository's
+// real lockfile for every environment, with the integrity npm recorded for each native package.
+test("build: every native package of every environment resolves to its real lockfile entry", () => {
+  const pluginRoot = fileURLToPath(new URL("../../", import.meta.url));
+  const lock = JSON.parse(readFileSync(join(pluginRoot, "..", "..", "package-lock.json"), "utf8")) as {
+    packages: Record<string, { version?: string; integrity?: string }>;
+  };
+  const environments = JSON.parse(
+    readFileSync(join(pluginRoot, "build-environments.json"), "utf8"),
+  ) as Record<string, { sdkPackage: string }>;
+  const dependencies = (
+    JSON.parse(readFileSync(join(pluginRoot, "package.json"), "utf8")) as {
+      dependencies?: Record<string, string>;
+      devDependencies?: Record<string, string>;
+    }
+  );
+  const natives = [
+    "@atbash/sdk-darwin-arm64",
+    "@atbash/sdk-linux-arm64-gnu",
+    "@atbash/sdk-linux-x64-gnu",
+    "@atbash/sdk-win32-x64-msvc",
+  ];
+  for (const [name, { sdkPackage }] of Object.entries(environments)) {
+    const spec =
+      dependencies.dependencies?.[sdkPackage] ?? dependencies.devDependencies?.[sdkPackage];
+    assert.ok(spec, `${name}: ${sdkPackage} is not a dependency of the plugin`);
+    const version = spec.replace(/^npm:@atbash\/sdk@/, "");
+    for (const native of natives) {
+      const recorded = Object.entries(lock.packages).find(
+        ([key, entry]) => key.endsWith(`node_modules/${native}`) && entry.version === version,
+      );
+      assert.ok(recorded, `${name}: the lockfile records no ${native}@${version}`);
+      assert.doesNotThrow(
+        () => helpers.assertLockedIntegrity(lock, native, version, recorded[1].integrity, sdkPackage),
+        `${name}: ${native}@${version}`,
+      );
+    }
+  }
 });
 
 // The dev build packs the natives of an aliased SDK (@atbash/sdk-dev), which npm nests under the
