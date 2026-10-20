@@ -410,6 +410,58 @@ test("an earlier call that spells the path with JSON escapes still marks the ses
   assert.equal(t.touchesSession, true);
 });
 
+// Governor review 2026-10-20 (LOW): the tail is split before the rule's time budget starts, so it must
+// be linear. Two 2 MiB shapes took about a second there: calls whose arguments nest deeply (each was
+// parsed and serialised again to decode escapes) and hundreds of thousands of tiny lines (each parsed).
+// That second came out of the margin before Codex's hook timeout, where a timeout lets the call run.
+test("a 2 MiB tail of hostile call shapes is split in linear time", () => {
+  const nestedCall = item({
+    type: "function_call",
+    name: "shell",
+    call_id: "c1",
+    arguments: "[".repeat(400) + "]".repeat(400),
+  });
+  const shapes = {
+    nested: Array.from(
+      { length: Math.ceil(MAX_TRANSCRIPT_BYTES / nestedCall.length) },
+      () => nestedCall,
+    ),
+    tiny: Array.from({ length: Math.ceil(MAX_TRANSCRIPT_BYTES / 3) }, () => "{}"),
+  };
+  for (const [name, lines] of Object.entries(shapes)) {
+    const started = performance.now();
+    splitTranscript([userLine("List the files."), ...lines], sessionMarkersFor("/tmp/t.jsonl"));
+    const elapsed = performance.now() - started;
+    assert.ok(elapsed < TIME_BUDGET_MS / 2, `${name}: took ${Math.round(elapsed)} ms`);
+  }
+});
+
+test("callOriginFor on a 2 MiB hostile transcript leaves the rule its whole budget", () => {
+  const dir = mkdtempSync(join(tmpdir(), "atbash-call-origin-"));
+  try {
+    const nestedCall = item({
+      type: "function_call",
+      name: "shell",
+      call_id: "c1",
+      arguments: "[".repeat(400) + "]".repeat(400),
+    });
+    const shapes = {
+      nested: Array(Math.ceil(MAX_TRANSCRIPT_BYTES / nestedCall.length)).fill(nestedCall),
+      tiny: Array(Math.ceil(MAX_TRANSCRIPT_BYTES / 3)).fill("{}"),
+    };
+    for (const [name, lines] of Object.entries(shapes)) {
+      const file = join(dir, `rollout-${name}.jsonl`);
+      writeFileSync(file, [userLine("List the files."), ...lines].join("\n"));
+      const started = performance.now();
+      callOriginFor({ cmd: "ls" }, file);
+      const elapsed = performance.now() - started;
+      assert.ok(elapsed < TIME_BUDGET_MS / 2, `${name}: took ${Math.round(elapsed)} ms`);
+    }
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 // Security re-review 2026-10-04 (LOW): the tail read cuts its first line, which then fails to parse
 // and was skipped whole; a call there that named the rollout went unseen. The cut fragment is still
 // scanned for the session's markers.
