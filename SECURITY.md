@@ -2,7 +2,7 @@
 
 Report suspected vulnerabilities privately to the Atbash team through your established support contact. Do not include private keys, real tool payloads, or transcripts in public issues.
 
-Security fixes target the testing branch `dev` for review. Store agent configuration outside this repository. Keep the SDK pinned and review generated runtime and native checksums when upgrading it. Hook enforcement covers only supported `PreToolUse` events and depends on the host enabling and trusting the hook.
+Security fixes are reviewed on the testing branch `dev` and reach users through the public release on `main`. Store agent configuration outside this repository. Keep the SDK pinned and review generated runtime and native checksums when upgrading it. Hook enforcement covers only supported `PreToolUse` events and depends on the host enabling and trusting the hook.
 
 ## Host-protocol residuals
 
