@@ -8,7 +8,7 @@
 // rounds. Real files, no mocks.
 
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -22,6 +22,7 @@ import type { ToolCallGuard } from "../src/atbash/guard.js";
 import {
   callOriginFor,
   classifyCallOrigin,
+  isNetworkPath,
   MAX_TRANSCRIPT_BYTES,
   TIME_BUDGET_MS,
   readTranscriptTail,
@@ -406,6 +407,23 @@ test("a network-shaped path is refused even when it names a readable file", () =
   }
 });
 
+// Test audit 2026-10-20: the readable-file test above can only fail on Windows (on POSIX a mixed
+// prefix names a missing file, refused either way), and PR CI runs on Linux. The rule itself is
+// pinned here on every platform: any two leading separators, in any mix, and nothing else.
+test("any two leading separators, in any mix, are a network path on every platform", () => {
+  const backslash = String.fromCharCode(92);
+  for (const path of [
+    `${backslash}${backslash}host${backslash}share`,
+    "//host/share",
+    `/${backslash}host${backslash}share`,
+    `${backslash}/host/share`,
+    `${backslash}${backslash}?${backslash}C:${backslash}t.jsonl`,
+  ])
+    assert.equal(isNetworkPath(path), true, path);
+  for (const path of ["/tmp/x", `C:${backslash}x`, "C:/x", `/tmp${backslash}${backslash}x`, ""])
+    assert.equal(isNetworkPath(path), false, path);
+});
+
 test(
   "a FIFO in place of the transcript is refused without blocking",
   {
@@ -417,7 +435,21 @@ test(
     try {
       const fifo = join(dir, "transcript.jsonl");
       execFileSync("mkfifo", [fifo]);
-      assert.equal(callOriginFor({ a: "b" }, fifo), "unknown");
+      // A blocking open cannot be interrupted inside this process, so a regression would hang the
+      // suite instead of failing it (test audit 2026-10-20). The read runs in a child with a deadline.
+      const module = new URL("../src/hook/call-origin.js", import.meta.url).href;
+      const child = spawnSync(
+        process.execPath,
+        [
+          "--input-type=module",
+          "-e",
+          `const m = await import(${JSON.stringify(module)}); process.stdout.write(m.callOriginFor({ a: "b" }, ${JSON.stringify(fifo)}));`,
+        ],
+        { encoding: "utf8", timeout: 5000 },
+      );
+      assert.equal(child.error, undefined, "the read blocked past 5 s");
+      assert.equal(child.status, 0, child.stderr);
+      assert.equal(child.stdout, "unknown");
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

@@ -430,7 +430,7 @@ export interface TranscriptText {
  * separators count, in any mix (\\host, //host, /\host, \/host): Windows treats "/" and "\" alike,
  * so a mixed prefix opens the \\?\UNC\host\share form just as \\host\share does.
  */
-function isNetworkPath(path: string): boolean {
+export function isNetworkPath(path: string): boolean {
   return /^[\\/]{2}/.test(path);
 }
 
