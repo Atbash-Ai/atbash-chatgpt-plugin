@@ -410,6 +410,27 @@ test("an earlier call that spells the path with JSON escapes still marks the ses
   assert.equal(t.touchesSession, true);
 });
 
+// Test audit 2026-10-20: the sessions-folder and file-name markers were only ever tested together
+// with ".codex" or ".jsonl", which match first. Each one is tested alone here, with controls.
+test("a call naming the transcript's sessions folder or file name marks the session; a sibling does not", () => {
+  const markers = sessionMarkersFor("/data/agent/sessions/2026/10/04/x.log");
+  const callNaming = (cmd: string) =>
+    item({
+      type: "function_call",
+      name: "shell",
+      call_id: "c1",
+      arguments: JSON.stringify({ cmd }),
+    });
+  const touches = (cmd: string) =>
+    splitTranscript([userLine("List the files."), callNaming(cmd)], markers).touchesSession;
+  assert.equal(touches("echo hi >> /data/agent/sessions/2026/10/04/"), true, "sessions folder");
+  assert.equal(touches(String.raw`type \data\agent\SESSIONS\other`), true, "any spelling");
+  assert.equal(touches("cat x.log"), true, "file name");
+  assert.equal(touches("ls /data/agent/notes/"), false, "a sibling folder");
+  assert.equal(touches("ls /data/agent/sessions-backup/"), false, "a folder with a longer name");
+  assert.equal(touches("cat y.log"), false, "another file");
+});
+
 // Governor review 2026-10-20 (LOW): the tail is split before the rule's time budget starts, so it must
 // be linear. Two 2 MiB shapes took about a second there: calls whose arguments nest deeply (each was
 // parsed and serialised again to decode escapes) and hundreds of thousands of tiny lines (each parsed).
