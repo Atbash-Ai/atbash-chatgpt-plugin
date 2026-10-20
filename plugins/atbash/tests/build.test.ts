@@ -216,13 +216,28 @@ test("build: an aliased SDK's native package is checked against its own nested l
   const top = "sha512-TOP";
   const lock = {
     packages: {
+      [`node_modules/${sdk}`]: { version: "2.0.0-dev.0" },
       [`node_modules/${sdk}/node_modules/${name}`]: { version: "2.0.0-dev.0", integrity: nested },
       [`node_modules/${name}`]: { version: "1.2.3", integrity: top },
     },
   };
   helpers.assertLockedIntegrity(lock, name, "2.0.0-dev.0", nested, sdk);
+  // No SDK is locked at 1.2.3, so nothing vouches for a 1.2.3 native packed for it.
   assert.throws(
     () => helpers.assertLockedIntegrity(lock, name, "1.2.3", top, sdk),
+    /not in the lockfile/,
+  );
+  // The nested entry is the one Node would load for this SDK: a top-level copy cannot stand in
+  // for it, and a nested entry at another version is refused rather than skipped.
+  const stale = {
+    packages: {
+      [`node_modules/${sdk}`]: { version: "2.0.0-dev.0" },
+      [`node_modules/${sdk}/node_modules/${name}`]: { version: "1.9.0", integrity: nested },
+      [`node_modules/${name}`]: { version: "2.0.0-dev.0", integrity: top },
+    },
+  };
+  assert.throws(
+    () => helpers.assertLockedIntegrity(stale, name, "2.0.0-dev.0", top, sdk),
     /does not match the lockfile/,
   );
   assert.throws(
