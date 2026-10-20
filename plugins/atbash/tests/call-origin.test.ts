@@ -450,8 +450,10 @@ test("a 2 MiB tail of hostile call shapes is split in linear time", () => {
     tiny: Array.from({ length: Math.ceil(MAX_TRANSCRIPT_BYTES / 3) }, () => "{}"),
   };
   for (const [name, lines] of Object.entries(shapes)) {
+    // Only the split is timed, not building its 2 MiB input.
+    const input = [userLine("List the files."), ...lines];
     const started = performance.now();
-    splitTranscript([userLine("List the files."), ...lines], sessionMarkersFor("/tmp/t.jsonl"));
+    splitTranscript(input, sessionMarkersFor("/tmp/t.jsonl"));
     const elapsed = performance.now() - started;
     assert.ok(elapsed < TIME_BUDGET_MS / 2, `${name}: took ${Math.round(elapsed)} ms`);
   }
