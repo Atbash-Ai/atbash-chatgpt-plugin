@@ -169,7 +169,10 @@ function withPluginCopy(
     // integrity the stand-in reports for it, as a real lockfile records the published tarball's.
     const sdkVersion = (
       JSON.parse(
-        readFileSync(join(repoRoot, "node_modules", ...sdkPackage.split("/"), "package.json"), "utf8"),
+        readFileSync(
+          join(repoRoot, "node_modules", ...sdkPackage.split("/"), "package.json"),
+          "utf8",
+        ),
       ) as { version: string }
     ).version;
     const packed = join(dir, "packed");
