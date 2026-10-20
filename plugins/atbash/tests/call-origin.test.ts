@@ -229,8 +229,10 @@ test("only the tail is read, and a recent injection is still found in a large tr
 
 test("the context carries the fact only for tool_output, and never transcript text", () => {
   const input = makeHookInput();
-  const plain = "source=codex; workspace=example; model=gpt-test; permission_mode=default";
-  assert.equal(buildAtbashContext(input), plain);
+  // The plain context is whatever the builder sends without a fact (its own facts are pinned by the
+  // runner tests); this test is only about what the call-origin fact adds.
+  const plain = buildAtbashContext(input);
+  assert.equal(plain.includes("call_origin="), false);
   assert.equal(buildAtbashContext(input, "unknown"), plain);
   const withFact = buildAtbashContext(input, "tool_output");
   assert.equal(withFact, `${plain}; ${CALL_ORIGIN_TOOL_OUTPUT}`);
@@ -261,15 +263,14 @@ test("the hook sends the fact to the judge when the transcript shows an injectio
     const path = join(dir, "rollout.jsonl");
     writeFileSync(path, lines.join("\n") + "\n");
     const calls: ToolCallInput[] = [];
-    await evaluatePreToolUse(
-      makeHookInput({ tool_name: "dropbox_move", tool_input: MOVE_CALL, transcript_path: path }),
-      () => recordingGuard(calls),
-    );
+    const hookInput = makeHookInput({
+      tool_name: "dropbox_move",
+      tool_input: MOVE_CALL,
+      transcript_path: path,
+    });
+    await evaluatePreToolUse(hookInput, () => recordingGuard(calls));
     assert.equal(calls.length, 1);
-    assert.equal(
-      calls[0]?.context,
-      `source=codex; workspace=example; model=gpt-test; permission_mode=default; ${CALL_ORIGIN_TOOL_OUTPUT}`,
-    );
+    assert.equal(calls[0]?.context, `${buildAtbashContext(hookInput)}; ${CALL_ORIGIN_TOOL_OUTPUT}`);
     // The user asked for it: no fact.
     writeFileSync(
       path,
