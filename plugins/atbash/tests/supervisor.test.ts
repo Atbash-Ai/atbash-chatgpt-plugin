@@ -381,7 +381,7 @@ test("a host pipe that takes one byte per stall never holds the supervisor past 
   );
 });
 
-// --- with the real bundle and a judge ---------------------------------------------------------
+// --- with the real bundle and a local test judge ----------------------------------------------
 
 async function startJudge(verdict: "ALLOW" | "BLOCK") {
   const hits: string[] = [];
@@ -445,7 +445,7 @@ async function startJudge(verdict: "ALLOW" | "BLOCK") {
 }
 
 for (const verdict of ["ALLOW", "BLOCK"] as const) {
-  test(`a judge ${verdict} reaches the host through the supervisor and the real bundle`, async () => {
+  test(`a local test judge's ${verdict} reaches the host through the supervisor and the real bundle`, async () => {
     const judge = await startJudge(verdict);
     try {
       const result = await runEntry(resolve("dist"), {

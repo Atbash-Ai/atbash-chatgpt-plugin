@@ -100,7 +100,7 @@ The hook also has to answer before the host gives up on it, because Codex and Cl
 | The judge is slow, or the hook process freezes (for example, an antivirus scanner holding the native addon's load) | A deny at `ATBASH_HOOK_DEADLINE_MS` (default 28 s) or, if the hook is frozen, 1.5 s later from the supervisor, which then kills the hook process |
 | The hook crashes, exits without a decision, or prints anything other than one deny                                 | A deny                                                                                                                                           |
 
-A silent exit counts as a permit only when the hook also signals it on a private channel from its normal exit path, so a hook process that is cut off without running its exit handlers is denied. The hook's log lines reach the host's stderr through the supervisor, capped at 2 KiB, so a hook process that cannot be torn down at once does not keep the host waiting.
+A silent exit counts as a permit only when the hook also signals it on a private channel from its normal exit path, so a hook process that is cut off without running its exit handlers is denied. The hook's log lines reach the host's stderr through the supervisor, capped at 2 KiB, so a hook process that cannot be torn down at once does not keep the host waiting. Both that cap and the deny's own size bound assume the host gives the hook a pipe of at least 4 KiB, as every known host does.
 
 Two gaps remain, and a hook on the agent's own machine cannot close them: Node itself not starting the supervisor before the host's timeout, and a scanner holding the supervisor while it starts the hook process. In both cases the host decides alone.
 

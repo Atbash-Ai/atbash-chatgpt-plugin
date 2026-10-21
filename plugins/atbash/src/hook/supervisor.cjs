@@ -24,7 +24,9 @@
 //
 // What this cannot close: a stall of THIS process before its timer is armed (node itself not
 // starting) or while it starts the child (process creation held by a scanner in this process's
-// context) - only the host timeout ends those; this file loads nothing but node built-ins.
+// context) - only the host timeout ends those; this file loads nothing but node built-ins. Code
+// preloaded into this process (NODE_OPTIONS=--require) runs here as it runs in the shim: the
+// supervisor shares the shim's in-process trust boundary (src/hook/shim.cjs, header) and adds none.
 const { spawn } = require("node:child_process");
 const fs = require("node:fs");
 const path = require("node:path");
@@ -117,7 +119,7 @@ function uptimeMs() {
 
 function writeAllSync(text) {
   // Every byte or an error, retried on EAGAIN without outliving the host's timeout (the shim's
-  // writeDecisionSync, without its in-process adversary handling: nothing else runs here). The
+  // writeDecisionSync, without its in-process adversary handling: no bundle runs here). The
   // first attempt always happens; retries stop at the stall budget or at the give-up: 1.5 s past
   // this run's deadline, or one stall budget after the first attempt if that is later, and never
   // past WRITE_CEILING_MS.
