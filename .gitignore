@@ -16,3 +16,6 @@ artifacts/
 config.json
 *.pem
 *.key
+plugins/atbash/runtime.build/
+plugins/atbash/runtime.old/
+plugins/atbash/.tmp/

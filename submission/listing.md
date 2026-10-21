@@ -4,7 +4,7 @@
 
 - Plugin name: `Atbash Safety`
 - Package name: `atbash`
-- Version: `0.3.4`
+- Version: `0.3.5`
 - Developer: `Atbash AI`
 - Category: `Security`
 - Short description: `Guard tool calls with Atbash`

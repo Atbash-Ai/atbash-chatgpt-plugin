@@ -12,12 +12,16 @@ const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const plugin = join(root, "plugins/atbash");
 const metadata = JSON.parse(await readFile(join(plugin, "package.json"), "utf8"));
 const runtime = JSON.parse(await readFile(join(plugin, "runtime/manifest.json"), "utf8"));
+const environments = JSON.parse(await readFile(join(plugin, "build-environments.json"), "utf8"));
+// The runtime is checked against the SDK pinned for the environment it was built for.
+const sdkPackage = environments[runtime.environment]?.sdkPackage;
+const pinned = metadata.dependencies?.[sdkPackage] ?? metadata.devDependencies?.[sdkPackage] ?? "";
+if (sdkPackage === undefined || runtime.sdkVersion !== pinned.replace(/^npm:@atbash\/sdk@/, "")) {
+  throw new Error("Runtime SDK differs from the pinned dependency. Rebuild before packaging.");
+}
 const pluginManifest = JSON.parse(
   await readFile(join(plugin, ".codex-plugin/plugin.json"), "utf8"),
 );
-if (runtime.sdkVersion !== metadata.dependencies["@atbash/sdk"]) {
-  throw new Error("Runtime SDK differs from the pinned dependency. Rebuild before packaging.");
-}
 console.log("Checking public website, support, privacy policy, and terms links...");
 const publicLinkChecks = await checkPublicLinks(pluginManifest.interface);
 for (const check of publicLinkChecks.results) {
@@ -34,8 +38,8 @@ try {
   await mkdir(output, { recursive: true });
   const full = join(staging, "plugin");
   await mkdir(full);
-  // The marketplace rejects embedded lifecycle hooks. Ship the runtime and local
-  // installer; registration happens explicitly after installation.
+  // The public archive excludes bundled hook registration. The Git marketplace
+  // keeps hooks/hooks.json; archive users register the local installer explicitly.
   const included = [".codex-plugin", "assets", "runtime", "skills"];
   for (const entry of included)
     await cp(join(plugin, entry), join(full, entry), { recursive: true });
@@ -67,6 +71,7 @@ try {
     sourceCommit: head.status === 0 ? head.stdout.trim() : null,
     workingTreeDirty: dirty.status !== 0 || dirty.stdout.trim() !== "",
     pluginVersion: metadata.version,
+    environment: runtime.environment,
     sdkVersion: runtime.sdkVersion,
     publicLinkChecks,
     files,

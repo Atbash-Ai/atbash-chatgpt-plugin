@@ -2,14 +2,14 @@
 
 Public source: https://github.com/Atbash-Ai/atbash-chatgpt-plugin/tree/main
 
-Candidate: `atbash` version `0.3.4`, using production `@atbash/sdk@0.9.2`. The plugin implements local `PreToolUse` enforcement plus a setup skill. No MCP server is included.
+Candidate: `atbash` version `0.3.5`, using production `@atbash/sdk@0.9.2`. The plugin implements local `PreToolUse` enforcement plus browser-authorized setup and management skills. No MCP server is included.
 
 Run `npm run package:submission` after verification. Packaging checks all four public URLs in the plugin manifest using unauthenticated HTTPS GET requests before creating any ZIP. A missing URL, failed request, non-success HTTP response, or empty page stops packaging. Network access is required. The resulting `artifacts/submission-manifest.json` records the check time, HTTP statuses, final URLs, exact source commit, and SHA-256 hashes. A branch URL identifies a moving source; the recorded commit identifies the specific package submitted for review.
 
 ## Artifacts
 
-- `atbash-plugin-0.3.4.zip`: complete plugin, including manifest, assets, local hook installer and runtime, native binaries, SDK license, and setup skill. Embedded hook registration is excluded for marketplace compatibility.
-- `atbash-setup-0.3.4.zip`: setup skill only. This cannot independently enforce tool safety.
+- `atbash-plugin-0.3.5.zip`: complete plugin, including manifest, assets, local hook installer and runtime, native binaries, SDK license, and setup and management skills. Embedded hook registration is excluded for marketplace compatibility.
+- `atbash-setup-0.3.5.zip`: setup skill only. This cannot independently enforce tool safety.
 - `submission-manifest.json`: local release provenance; it is not the portal's `chatgpt-app-submission.json` import schema.
 
 Upload each artifact only to a portal field that accepts that artifact type. Do not upload a ZIP into a JSON form-import field. Never include agent credentials in a distributable package.
