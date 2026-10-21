@@ -93,9 +93,17 @@ Give every new agent a starting policy by adding `"policy": { "preset": "<preset
 
 ## Connect an existing agent
 
-After wallet verification and discovery, run `profile connect <job-id>` through the launcher. Show the returned loopback `localUri` to the user. The user enters the key in that local page. The helper derives its public key and connects it only if discovery shows the verified wallet owns the matching agent. The private key is never sent to Atbash or printed.
+After wallet verification and discovery, run `profile connect <job-id>` through the launcher. Show the returned loopback `localUri` to the user. If the user abandons the connection, or the local page expires before a key is entered, cancel the job as described under **Cancel setup**. The user enters the key in that local page. The helper derives its public key and connects it only if discovery shows the verified wallet owns the matching agent. The private key is never sent to Atbash or printed.
 
 Never ask the user to paste, upload, reveal, or dictate a private key. Never read or print credential files. Never put a key in a plan, prompt, environment assignment, command-line argument, committed file, or shell history.
+
+## Cancel setup
+
+`setup cancel <job-id>`, run through the same launcher, ends a setup job: it cancels the session in Connect Atbash, so its link stops working, and deletes the job's local files, including its session secret. Setup mode allows it, and it needs the same network and configuration-directory access as the other helper commands.
+
+- Run it when the user asks to stop, cancel, or start over, or abandons setup, while `nextAction` is `OPEN_BROWSER`, `PREPARE_PLAN`, or `REVIEW_IN_BROWSER`. Tell the user setup was cancelled. To start over, run `setup start` for a new job.
+- Run it at `RECOVER` when the session was cancelled, rejected, or expired, and for an expired job you will not resume, so its secrets do not stay on disk. If the helper reports that the session had already ended on Atbash, the cleanup still succeeded.
+- Do not cancel after the user approved the proposal: approved steps run in the browser and cancelling does not undo them. Let the job finish and report what was created. At `ACTIVATE` the new agent's key is waiting to be activated and the helper refuses to cancel; run `setup continue <job-id>` instead.
 
 ## Profiles and legacy compatibility
 
