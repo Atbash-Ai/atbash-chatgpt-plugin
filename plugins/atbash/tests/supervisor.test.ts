@@ -188,6 +188,13 @@ test("a killed hook that cannot die yet does not hold the host's output open", a
       const result = await runEntry(dir, { ATBASH_HOOK_DEADLINE_MS: "3000" });
       assertSingleDeny(result, /did not finish/);
       assert.ok(result.wallMs < 9_000, `the host got its answer after ${result.wallMs} ms`);
+      // Not vacuous: the stand-in for the undying process was really there, and still alive, when
+      // the host got its answer.
+      assert.ok(existsSync(pidFile), "the grandchild was never started");
+      assert.doesNotThrow(
+        () => process.kill(Number(readFileSync(pidFile, "utf8")), 0),
+        "the grandchild was already gone",
+      );
     } finally {
       // Before the runtime directory is removed: the grandchild was started from it.
       stopGrandchild();
@@ -295,6 +302,8 @@ for (const [label, output, code] of [
   ["a log line", "hello from a stray library\n", 0],
   ["a deny over the byte bound", `${denyLiteral("x".repeat(5_000))}\n`, 0],
   ["a deny behind 20 KB of padding", `${" ".repeat(20_000)}${denyLiteral("padded")}\n`, 0],
+  // A single deny spread over lines: one decision, but not the one-line shape the shim writes.
+  ["a pretty-printed deny", `${JSON.stringify(JSON.parse(denyLiteral("pretty")), null, 2)}\n`, 0],
   ["a valid deny but exit 1", `${denyLiteral("exit one")}\n`, 1],
   ["a valid deny but exit 2", `${denyLiteral("exit two")}\n`, 2],
 ] as const) {
@@ -305,6 +314,20 @@ for (const [label, output, code] of [
     });
   });
 }
+
+test("a deny followed by more than the stdout bound in separate writes is denied, never forwarded", async () => {
+  // The deny arrives first and fits; what follows pushes the child's stdout past 16 KiB in many
+  // small writes, so the first chunks hold a parseable deny and only the overflow mark tells.
+  const shim = [
+    'const fs = require("node:fs");',
+    `fs.writeSync(1, ${JSON.stringify(`${denyLiteral("then flooded")}\n`)});`,
+    'for (let i = 0; i < 40; i += 1) fs.writeSync(1, " ".repeat(512));',
+    "process.exitCode = 0;",
+  ].join("\n");
+  await withRuntime({ "pre-tool-use-shim.cjs": shim }, async (dir) => {
+    assertSingleDeny(await runEntry(dir, {}), /without a usable decision/);
+  });
+});
 
 test("an invalid ATBASH_HOOK_DEADLINE_MS is denied at once through the supervisor", async () => {
   await withRuntime({ "pre-tool-use-main.cjs": STALLED_BUNDLE }, async (dir) => {
@@ -471,6 +494,29 @@ for (const verdict of ["ALLOW", "BLOCK"] as const) {
 }
 
 // --- the supervisor and the shim agree ----------------------------------------------------------
+
+test("the installer's timeout floor outlasts the supervisor's last possible write", () => {
+  // status and install-hook report an entry as enforcing only from HOOK_TIMEOUT_FLOOR_SECONDS up;
+  // the supervisor starts no write retry past WRITE_CEILING_MS of uptime, and then exits.
+  const supervisor = readFileSync("src/hook/supervisor.cjs", "utf8");
+  const hooksFile = readFileSync("src/install-hook/hooks-file.ts", "utf8");
+  const constant = (name: string) => {
+    const match = new RegExp(`^const ${name} = (\\d+);$`, "m").exec(supervisor);
+    assert.ok(match, `${name} missing from the supervisor`);
+    return Number(match[1]);
+  };
+  assert.match(
+    supervisor,
+    /^const WRITE_CEILING_MS = MAX_DEADLINE_MS \+ SUPERVISOR_MARGIN_MS \+ 1500;$/m,
+  );
+  const ceilingMs = constant("MAX_DEADLINE_MS") + constant("SUPERVISOR_MARGIN_MS") + 1500;
+  const floor = /^export const HOOK_TIMEOUT_FLOOR_SECONDS = (\d+);$/m.exec(hooksFile);
+  assert.ok(floor, "HOOK_TIMEOUT_FLOOR_SECONDS missing");
+  assert.ok(
+    Number(floor[1]) * 1000 >= ceilingMs + 1000,
+    `floor ${floor[1]} s leaves no second after the ${ceilingMs} ms write ceiling`,
+  );
+});
 
 test("the supervisor's copies of the shim's constants match the shim", () => {
   const supervisor = readFileSync("src/hook/supervisor.cjs", "utf8");

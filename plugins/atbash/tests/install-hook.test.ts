@@ -1553,7 +1553,8 @@ test("install-hook: an Atbash entry the host would not run - a narrow matcher, a
         },
         warning: /type "webhook" instead of "command"/,
       },
-      // A timeout of 32 outlasts the deadline but not the deny write's stall budget and the exit.
+      // A timeout of 32 outlasts the shim's largest deadline but not the supervisor's deny write
+      // (no retry past 33 s of uptime) and the exit.
       {
         edit: (d) => {
           (d.hooks?.PreToolUse?.[0]?.hooks?.[0] as HookShape).timeout = 32;

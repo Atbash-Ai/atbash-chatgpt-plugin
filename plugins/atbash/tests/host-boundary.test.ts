@@ -172,7 +172,7 @@ test("the shipped entry point is a small supervisor in front of the un-bundled s
     ["runtime/pre-tool-use-shim.cjs", /pre-tool-use-main\.cjs/],
   ] as const) {
     const size = statSync(entry).size;
-    // The bundle is over a megabyte; the shim is a documentation-heavy 30 KB, the supervisor 8 KB.
+    // The bundle is over a megabyte; the shim is a documentation-heavy 30 KB, the supervisor 11 KB.
     // The bound sits between the two, not at either file's current size.
     assert.ok(size < 32_768, `${entry} is ${size} bytes - it should not be the bundle`);
     assert.match(readFileSync(entry, "utf8"), loads);
