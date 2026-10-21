@@ -244,6 +244,9 @@ test("marketplace package includes the setup and management skills", () => {
     readFileSync("skills/atbash-manage/SKILL.md", "utf8"),
     /^---\r?\nname: atbash-manage\r?\n/,
   );
+  // AT-576: the helper can cancel a job, but only an instruction makes the agent use it.
+  assert.match(skill, /`setup cancel <job-id>`/);
+  assert.match(readFileSync("skills/atbash-manage/SKILL.md", "utf8"), /`manage cancel <job-id>`/);
   assert.match(
     readFileSync("skills/atbash-setup/scripts/atbash-control.mjs", "utf8"),
     /runtime\/control\.cjs/,
