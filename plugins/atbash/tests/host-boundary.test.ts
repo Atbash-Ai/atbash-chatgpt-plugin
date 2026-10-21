@@ -30,7 +30,10 @@ import { generateKeypair } from "@atbash/sdk";
 
 import { makeHookInput } from "./fixtures.js";
 
-const ENTRY = "dist/pre-tool-use.cjs";
+// The shim, run directly: these tests pin its own guarantees. The host starts the supervisor
+// (dist/pre-tool-use.cjs), which runs this file in a child process; supervisor.test.ts covers that
+// boundary end to end.
+const ENTRY = "dist/pre-tool-use-shim.cjs";
 const DENY_SHAPE = /"permissionDecision":"deny"/;
 
 // How the bundled hook hands its decision to the shim: an in-process function the shim installs
@@ -159,20 +162,34 @@ test("a slow-but-alive judge is denied before the host's 35 s hook timeout", asy
   }
 });
 
-test("the shipped entry point is a small un-bundled shim in front of the bundled hook", () => {
-  // The shim is what makes the next two tests possible: it must not itself be the megabyte bundle
-  // whose load failure it guards against.
-  for (const entry of [ENTRY, "runtime/pre-tool-use.cjs"]) {
+test("the shipped entry point is a small supervisor in front of the un-bundled shim and the bundle", () => {
+  // Neither the supervisor nor the shim may be the megabyte bundle whose load failure they guard
+  // against; the supervisor runs the shim in a child, the shim loads the bundle.
+  for (const [entry, loads] of [
+    ["dist/pre-tool-use.cjs", /pre-tool-use-shim\.cjs/],
+    ["runtime/pre-tool-use.cjs", /pre-tool-use-shim\.cjs/],
+    [ENTRY, /pre-tool-use-main\.cjs/],
+    ["runtime/pre-tool-use-shim.cjs", /pre-tool-use-main\.cjs/],
+  ] as const) {
     const size = statSync(entry).size;
-    // The bundle is over a megabyte; the shim is a documentation-heavy 17 KB. The bound sits
-    // between the two, not at the shim's current size.
-    assert.ok(size < 32_768, `${entry} is ${size} bytes - it should be the shim, not the bundle`);
-    assert.match(readFileSync(entry, "utf8"), /pre-tool-use-main\.cjs/);
+    // The bundle is over a megabyte; the shim is a documentation-heavy 30 KB, the supervisor 8 KB.
+    // The bound sits between the two, not at either file's current size.
+    assert.ok(size < 32_768, `${entry} is ${size} bytes - it should not be the bundle`);
+    assert.match(readFileSync(entry, "utf8"), loads);
   }
-  // The shipped copy is the source shim, byte for byte.
+  // The shipped copies are the sources, byte for byte.
   assert.equal(
     readFileSync("runtime/pre-tool-use.cjs", "utf8"),
+    readFileSync("src/hook/supervisor.cjs", "utf8"),
+  );
+  assert.equal(
+    readFileSync("runtime/pre-tool-use-shim.cjs", "utf8"),
     readFileSync("src/hook/shim.cjs", "utf8"),
+  );
+  // The supervisor never loads the bundle or the native addon itself.
+  assert.doesNotMatch(
+    readFileSync("src/hook/supervisor.cjs", "utf8"),
+    /require\(["']\.\/pre-tool-use-main|atbash-native|\.node["']/,
   );
 });
 
@@ -229,7 +246,7 @@ test("a runtime that throws while loading still denies with exit 0", async () =>
     writeFileSync(join(d, "pre-tool-use-main.cjs"), 'throw new Error("damaged runtime");\n');
   });
   try {
-    const result = await runHook(join(dir, "pre-tool-use.cjs"), {}, dir);
+    const result = await runHook(join(dir, "pre-tool-use-shim.cjs"), {}, dir);
     assert.equal(result.code, 0, result.stderr);
     assert.match(result.stdout, DENY_SHAPE, result.stdout);
     assert.match(result.stdout, /could not load/, result.stdout);
@@ -247,7 +264,7 @@ test("a runtime that crashes asynchronously still denies with exit 0", async () 
     );
   });
   try {
-    const result = await runHook(join(dir, "pre-tool-use.cjs"), {}, dir);
+    const result = await runHook(join(dir, "pre-tool-use-shim.cjs"), {}, dir);
     assert.equal(result.code, 0, result.stderr);
     assert.match(result.stdout, DENY_SHAPE, result.stdout);
     assert.match(result.stdout, /crashed/, result.stdout);
@@ -261,7 +278,7 @@ test("a runtime whose promise rejects unhandled still denies with exit 0", async
     writeFileSync(join(d, "pre-tool-use-main.cjs"), 'Promise.reject(new Error("rejected"));\n');
   });
   try {
-    const result = await runHook(join(dir, "pre-tool-use.cjs"), {}, dir);
+    const result = await runHook(join(dir, "pre-tool-use-shim.cjs"), {}, dir);
     assert.equal(result.code, 0, result.stderr);
     assert.match(result.stdout, DENY_SHAPE, result.stdout);
     assert.match(result.stdout, /crashed/, result.stdout);
@@ -338,7 +355,7 @@ test("a decision the bundle already wrote is never followed by a second one", as
   });
   try {
     const result = await runHook(
-      join(dir, "pre-tool-use.cjs"),
+      join(dir, "pre-tool-use-shim.cjs"),
       { ATBASH_HOOK_DEADLINE_MS: "1500" },
       dir,
     );
@@ -389,7 +406,7 @@ test("when stdout cannot be written the shim exits 2, never 0 with an empty outp
   try {
     const result = await new Promise<RunResult>((resolve) => {
       const started = process.hrtime.bigint();
-      const child = spawn(process.execPath, [join(dir, "pre-tool-use.cjs")], {
+      const child = spawn(process.execPath, [join(dir, "pre-tool-use-shim.cjs")], {
         cwd: dir,
         env: { PATH: process.env.PATH, ATBASH_HOOK_DEADLINE_MS: "1000" },
         stdio: ["pipe", "pipe", "pipe"],
@@ -427,7 +444,7 @@ test("a runtime that logs to stdout and then hangs is still denied at the deadli
   });
   try {
     const result = await runHook(
-      join(dir, "pre-tool-use.cjs"),
+      join(dir, "pre-tool-use-shim.cjs"),
       { ATBASH_HOOK_DEADLINE_MS: "1500" },
       dir,
     );
@@ -460,7 +477,7 @@ test("a decision the bundle wrote is delivered in full when the host reads late"
   try {
     const result = await new Promise<RunResult>((resolve) => {
       const started = process.hrtime.bigint();
-      const child = spawn(process.execPath, [join(dir, "pre-tool-use.cjs")], {
+      const child = spawn(process.execPath, [join(dir, "pre-tool-use-shim.cjs")], {
         cwd: dir,
         env: { PATH: process.env.PATH, ATBASH_HOOK_DEADLINE_MS: "1500" },
         stdio: ["pipe", "pipe", "pipe"],
@@ -511,7 +528,7 @@ test("a log line that merely contains the decision marker is diverted, not trust
   });
   try {
     const result = await runHook(
-      join(dir, "pre-tool-use.cjs"),
+      join(dir, "pre-tool-use-shim.cjs"),
       { ATBASH_HOOK_DEADLINE_MS: "1500" },
       dir,
     );
@@ -560,7 +577,7 @@ test("the shim accepts exactly what serializeDeny emits, over the answer channel
   });
   try {
     const result = await runHook(
-      join(dir, "pre-tool-use.cjs"),
+      join(dir, "pre-tool-use-shim.cjs"),
       { ATBASH_HOOK_DEADLINE_MS: "1500" },
       dir,
     );
@@ -593,7 +610,7 @@ test("a decision written to stdout instead of the answer channel is diverted, no
     });
     try {
       const result = await runHook(
-        join(dir, "pre-tool-use.cjs"),
+        join(dir, "pre-tool-use-shim.cjs"),
         { ATBASH_HOOK_DEADLINE_MS: "1500" },
         dir,
       );
@@ -663,7 +680,7 @@ test("an invalid payload on the answer channel is a deny, never a permit", async
     });
     try {
       const result = await runHook(
-        join(dir, "pre-tool-use.cjs"),
+        join(dir, "pre-tool-use-shim.cjs"),
         { ATBASH_HOOK_DEADLINE_MS: "6000" },
         dir,
       );
@@ -699,7 +716,7 @@ test("a permit answered through the channel is silence, and a deny after a stray
     // A 6 s deadline: a prompt exit ends well under it even on a loaded machine (a 1.4 s bound
     // failed in a cold export while three other suites ran); lingering to the deadline does not.
     const result = await runHook(
-      join(lone, "pre-tool-use.cjs"),
+      join(lone, "pre-tool-use-shim.cjs"),
       { ATBASH_HOOK_DEADLINE_MS: "6000" },
       lone,
     );
@@ -717,7 +734,7 @@ test("a permit answered through the channel is silence, and a deny after a stray
   });
   try {
     const result = await runHook(
-      join(overridden, "pre-tool-use.cjs"),
+      join(overridden, "pre-tool-use-shim.cjs"),
       { ATBASH_HOOK_DEADLINE_MS: "6000" },
       overridden,
     );
@@ -745,7 +762,7 @@ test("a permit followed by a lingering handle is still denied at the deadline", 
   });
   try {
     const result = await runHook(
-      join(dir, "pre-tool-use.cjs"),
+      join(dir, "pre-tool-use-shim.cjs"),
       { ATBASH_HOOK_DEADLINE_MS: "1500" },
       dir,
     );
@@ -776,7 +793,7 @@ test("a bundle deny that arrives after the host closed stdout is a blocking exit
   try {
     const result = await new Promise<RunResult>((resolve) => {
       const started = process.hrtime.bigint();
-      const child = spawn(process.execPath, [join(dir, "pre-tool-use.cjs")], {
+      const child = spawn(process.execPath, [join(dir, "pre-tool-use-shim.cjs")], {
         cwd: dir,
         env: { PATH: process.env.PATH, ATBASH_HOOK_DEADLINE_MS: "6000" },
         stdio: ["pipe", "pipe", "pipe"],
@@ -818,7 +835,7 @@ test("a bundle that returns without answering is denied at exit, never a permit"
     });
     try {
       const result = await runHook(
-        join(dir, "pre-tool-use.cjs"),
+        join(dir, "pre-tool-use-shim.cjs"),
         { ATBASH_HOOK_DEADLINE_MS: "6000" },
         dir,
       );
@@ -852,7 +869,7 @@ test("a second load of the shim never appends a second decision", async () => {
   // load after a delivered deny with process.exit made a no-op in-process is the residual the
   // shim header names, in the same class as patching fs.)
   const dir = withDamagedRuntime((d) => {
-    copyFileSync(join(d, "pre-tool-use.cjs"), join(d, "pre-tool-use-copy.cjs"));
+    copyFileSync(join(d, "pre-tool-use-shim.cjs"), join(d, "pre-tool-use-copy.cjs"));
     writeFileSync(
       join(d, "pre-tool-use-main.cjs"),
       `require("./pre-tool-use-copy.cjs"); ${ANSWER}(JSON.stringify({ hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: "the one deny" } }));\n`,
@@ -860,7 +877,7 @@ test("a second load of the shim never appends a second decision", async () => {
   });
   try {
     const result = await runHook(
-      join(dir, "pre-tool-use.cjs"),
+      join(dir, "pre-tool-use-shim.cjs"),
       { ATBASH_HOOK_DEADLINE_MS: "6000" },
       dir,
     );
@@ -897,7 +914,7 @@ test("a foreign function already on the answer channel is a deny, never a silent
   });
   try {
     const result = await runHook(
-      join(dir, "pre-tool-use.cjs"),
+      join(dir, "pre-tool-use-shim.cjs"),
       {
         ATBASH_HOOK_DEADLINE_MS: "6000", // NODE_OPTIONS unescapes backslashes inside quotes: forward slashes resolve on every platform.
         NODE_OPTIONS: `--require "${join(dir, "decoy.cjs").split("\\").join("/")}"`,
@@ -938,7 +955,7 @@ test("a forged brand on the answer channel is a deny, never a silent permit", as
     });
     try {
       const result = await runHook(
-        join(dir, "pre-tool-use.cjs"),
+        join(dir, "pre-tool-use-shim.cjs"),
         {
           ATBASH_HOOK_DEADLINE_MS: "6000",
           NODE_OPTIONS: `--require "${join(dir, "decoy.cjs").split("\\").join("/")}"`,
@@ -980,7 +997,7 @@ test("a sibling key on a channel deny never reaches the host", async () => {
   });
   try {
     const result = await runHook(
-      join(dir, "pre-tool-use.cjs"),
+      join(dir, "pre-tool-use-shim.cjs"),
       { ATBASH_HOOK_DEADLINE_MS: "6000" },
       dir,
     );
@@ -1010,7 +1027,7 @@ test("an oversized reason is capped and still delivered as one parseable deny", 
   });
   try {
     const result = await runHook(
-      join(dir, "pre-tool-use.cjs"),
+      join(dir, "pre-tool-use-shim.cjs"),
       { ATBASH_HOOK_DEADLINE_MS: "6000" },
       dir,
     );
@@ -1047,7 +1064,7 @@ test("an oversized reason never hangs the hook when the host does not read", asy
     });
     try {
       const result = await runAgainstNonReadingHost(
-        join(dir, "pre-tool-use.cjs"),
+        join(dir, "pre-tool-use-shim.cjs"),
         { ATBASH_HOOK_DEADLINE_MS: "6000" },
         dir,
         12_000,
@@ -1086,7 +1103,7 @@ test("an oversized reason is cut to the byte bound, escaping and multi-byte char
     });
     try {
       const result = await runHook(
-        join(dir, "pre-tool-use.cjs"),
+        join(dir, "pre-tool-use-shim.cjs"),
         { ATBASH_HOOK_DEADLINE_MS: "6000" },
         dir,
       );
@@ -1123,7 +1140,7 @@ test("a refused channel still denies on stdout even when process.exit was patche
   });
   try {
     const result = await runHook(
-      join(dir, "pre-tool-use.cjs"),
+      join(dir, "pre-tool-use-shim.cjs"),
       {
         ATBASH_HOOK_DEADLINE_MS: "6000",
         NODE_OPTIONS: `--require "${join(dir, "decoy.cjs").split("\\").join("/")}"`,
@@ -1152,7 +1169,7 @@ test("a small deny to a host that never reads is delivered into the pipe and the
   });
   try {
     const result = await runAgainstNonReadingHost(
-      join(dir, "pre-tool-use.cjs"),
+      join(dir, "pre-tool-use-shim.cjs"),
       { ATBASH_HOOK_DEADLINE_MS: "6000" },
       dir,
       12_000,
@@ -1193,7 +1210,7 @@ test("a transport that never accepts the decision ends with a blocking exit, nev
   });
   try {
     const result = await runHook(
-      join(dir, "pre-tool-use.cjs"),
+      join(dir, "pre-tool-use-shim.cjs"),
       {
         ATBASH_HOOK_DEADLINE_MS: "6000",
         NODE_OPTIONS: `--require "${join(dir, "decoy.cjs").split("\\").join("/")}"`,
@@ -1229,7 +1246,7 @@ test("a decision cut short by an in-process exit is never a permit", async () =>
   });
   try {
     const result = await runHook(
-      join(dir, "pre-tool-use.cjs"),
+      join(dir, "pre-tool-use-shim.cjs"),
       { ATBASH_HOOK_DEADLINE_MS: "6000" },
       dir,
     );
@@ -1276,7 +1293,7 @@ test("a forged decided mark does not silence the exit backstop or the refusal", 
     });
     try {
       const result = await runHook(
-        join(dir, "pre-tool-use.cjs"),
+        join(dir, "pre-tool-use-shim.cjs"),
         {
           ATBASH_HOOK_DEADLINE_MS: "6000",
           NODE_OPTIONS: `--require "${join(dir, "decoy.cjs").split("\\").join("/")}"`,
@@ -1332,7 +1349,7 @@ test("a host that closed stderr does not turn a diverted log line into a crash",
   try {
     const result = await new Promise<RunResult>((resolve) => {
       const started = process.hrtime.bigint();
-      const child = spawn(process.execPath, [join(dir, "pre-tool-use.cjs")], {
+      const child = spawn(process.execPath, [join(dir, "pre-tool-use-shim.cjs")], {
         cwd: dir,
         env: { PATH: process.env.PATH, ATBASH_HOOK_DEADLINE_MS: "1500" },
         stdio: ["pipe", "pipe", "pipe"],
@@ -1397,7 +1414,7 @@ test("a transport that accepts one byte per stall never holds the hook past the 
   });
   try {
     const result = await runHook(
-      join(dir, "pre-tool-use.cjs"),
+      join(dir, "pre-tool-use-shim.cjs"),
       {
         ATBASH_HOOK_DEADLINE_MS: "6000",
         NODE_OPTIONS: `--require "${join(dir, "decoy.cjs").split("\\").join("/")}"`,
@@ -1443,7 +1460,7 @@ test("a channel slot whose getter throws is refused with a deny, not node's exit
   });
   try {
     const result = await runHook(
-      join(dir, "pre-tool-use.cjs"),
+      join(dir, "pre-tool-use-shim.cjs"),
       {
         ATBASH_HOOK_DEADLINE_MS: "6000",
         NODE_OPTIONS: `--require "${join(dir, "decoy.cjs").split("\\").join("/")}"`,
@@ -1469,7 +1486,7 @@ test("a refusal whose own write fails behind another load's deny is a blocking e
   // carries the same mark. That the genuine deny sits behind a 2 here (a Codex permit; Claude
   // Code blocks) needs process.exit neutered in-process - the residual the shim header names.
   const dir = withDamagedRuntime((d) => {
-    copyFileSync(join(d, "pre-tool-use.cjs"), join(d, "pre-tool-use-copy.cjs"));
+    copyFileSync(join(d, "pre-tool-use-shim.cjs"), join(d, "pre-tool-use-copy.cjs"));
     writeFileSync(join(d, "decoy.cjs"), "process.exit = function () {};\n");
     writeFileSync(
       join(d, "pre-tool-use-main.cjs"),
@@ -1489,7 +1506,7 @@ test("a refusal whose own write fails behind another load's deny is a blocking e
   });
   try {
     const result = await runHook(
-      join(dir, "pre-tool-use.cjs"),
+      join(dir, "pre-tool-use-shim.cjs"),
       {
         ATBASH_HOOK_DEADLINE_MS: "6000",
         NODE_OPTIONS: `--require "${join(dir, "decoy.cjs").split("\\").join("/")}"`,
@@ -1536,7 +1553,7 @@ test("a refusal whose own write fails behind a forged mark is never a permit-sha
   });
   try {
     const result = await runHook(
-      join(dir, "pre-tool-use.cjs"),
+      join(dir, "pre-tool-use-shim.cjs"),
       {
         ATBASH_HOOK_DEADLINE_MS: "6000",
         NODE_OPTIONS: `--require "${join(dir, "decoy.cjs").split("\\").join("/")}"`,
@@ -1570,7 +1587,7 @@ test("a channel accessor that reads undefined and then claims a decision is stil
   });
   try {
     const result = await runHook(
-      join(dir, "pre-tool-use.cjs"),
+      join(dir, "pre-tool-use-shim.cjs"),
       {
         ATBASH_HOOK_DEADLINE_MS: "6000",
         NODE_OPTIONS: `--require "${join(dir, "decoy.cjs").split("\\").join("/")}"`,
@@ -1613,7 +1630,7 @@ test("a transport that accepts one byte per call without refusing never holds th
   });
   try {
     const result = await runHook(
-      join(dir, "pre-tool-use.cjs"),
+      join(dir, "pre-tool-use-shim.cjs"),
       {
         ATBASH_HOOK_DEADLINE_MS: "6000",
         NODE_OPTIONS: `--require "${join(dir, "decoy.cjs").split("\\").join("/")}"`,
@@ -1661,7 +1678,7 @@ test("a bundle that blanks fs.writeSync cannot turn the deny into an empty, perm
   });
   try {
     const result = await runHook(
-      join(dir, "pre-tool-use.cjs"),
+      join(dir, "pre-tool-use-shim.cjs"),
       { ATBASH_HOOK_DEADLINE_MS: "6000" },
       dir,
     );
@@ -1691,7 +1708,7 @@ test("a bundle that blocks the event loop past the delivery give-up still gets i
   });
   try {
     const result = await runHook(
-      join(dir, "pre-tool-use.cjs"),
+      join(dir, "pre-tool-use-shim.cjs"),
       { ATBASH_HOOK_DEADLINE_MS: "30000" },
       dir,
     );
@@ -1744,7 +1761,7 @@ test("a host that is merely slow to drain still gets a deny on stdout, never a b
   });
   try {
     const result = await runHook(
-      join(dir, "pre-tool-use.cjs"),
+      join(dir, "pre-tool-use-shim.cjs"),
       {
         ATBASH_HOOK_DEADLINE_MS: "6000",
         NODE_OPTIONS: `--require "${join(dir, "decoy.cjs").split("\\").join("/")}"`,
@@ -1786,7 +1803,7 @@ test("a transport that accepts the deny slowly but steadily still gets the whole
   });
   try {
     const result = await runHook(
-      join(dir, "pre-tool-use.cjs"),
+      join(dir, "pre-tool-use-shim.cjs"),
       { NODE_OPTIONS: `--require "${join(dir, "decoy.cjs").split("\\").join("/")}"` },
       dir,
     );
@@ -1832,7 +1849,7 @@ for (const [lie, label] of [
     });
     try {
       const result = await runHook(
-        join(dir, "pre-tool-use.cjs"),
+        join(dir, "pre-tool-use-shim.cjs"),
         {
           ATBASH_HOOK_DEADLINE_MS: "6000",
           NODE_OPTIONS: `--require "${join(dir, "decoy.cjs").split("\\").join("/")}"`,
@@ -1880,7 +1897,7 @@ test("a transport that accepts zero bytes without an error is waited out like a 
   });
   try {
     const result = await runHook(
-      join(dir, "pre-tool-use.cjs"),
+      join(dir, "pre-tool-use-shim.cjs"),
       {
         ATBASH_HOOK_DEADLINE_MS: "6000",
         NODE_OPTIONS: `--require "${join(dir, "decoy.cjs").split("\\").join("/")}"`,

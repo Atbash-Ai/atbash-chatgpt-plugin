@@ -141,13 +141,15 @@ test("marketplace runtime includes every supported native target", () => {
 test("marketplace runtime ships every entry point with the mode the build sets", () => {
   // CI rebuilds the runtime on Linux and diffs it against the committed tree, modes included; on
   // Windows the working tree cannot show a mode, so the index is what is checked. The hashbang
-  // bundles are executable, the shim and the library are not, and the installer is a bundle.
+  // bundles are executable, the supervisor, the shim and the library are not, and the installer is
+  // a bundle.
   const expected: Record<string, string> = {
     "runtime/atbash-native.cjs": "100644",
     "runtime/index.cjs": "100644",
     "runtime/install-hook.cjs": "100755",
     "runtime/pre-tool-use.cjs": "100644",
     "runtime/pre-tool-use-main.cjs": "100755",
+    "runtime/pre-tool-use-shim.cjs": "100644",
     "runtime/status.cjs": "100755",
     "runtime/control.cjs": "100755",
   };
@@ -170,7 +172,8 @@ test("marketplace runtime ships every entry point with the mode the build sets",
   for (const path of Object.keys(expected)) {
     assert.equal(existsSync(path), true, path);
   }
-  // Each bundled entry point starts with the hashbang the build preserves; the shim does not.
+  // Each bundled entry point starts with the hashbang the build preserves; the supervisor and the
+  // shim do not.
   for (const path of [
     "runtime/install-hook.cjs",
     "runtime/pre-tool-use-main.cjs",
@@ -179,6 +182,7 @@ test("marketplace runtime ships every entry point with the mode the build sets",
     assert.match(readFileSync(path, "utf8"), /^#!\/usr\/bin\/env node\n/, path);
   }
   assert.doesNotMatch(readFileSync("runtime/pre-tool-use.cjs", "utf8"), /^#!/);
+  assert.doesNotMatch(readFileSync("runtime/pre-tool-use-shim.cjs", "utf8"), /^#!/);
 });
 
 test("marketplace runtime targets the environment recorded in its manifest", () => {
