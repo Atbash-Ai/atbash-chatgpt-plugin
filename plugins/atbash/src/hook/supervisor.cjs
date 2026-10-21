@@ -11,15 +11,20 @@
 // runs whatever the child does: past the deadline the child is killed and the call is denied.
 //
 // The answer the host sees is decided here, from what the child produced:
-//   - exit 0 with an empty stdout: the shim's permit (its exit backstop turns every other silent
-//     exit into a deny, so an empty 0 is the bundle's explicit allow) - nothing is written;
+//   - exit 0, an empty stdout AND the shim's permit sign on the private fd 3 pipe: the bundle's
+//     explicit permit - nothing is written. The sign is written from the shim's exit listener, so
+//     a child that ends 0 without running its listeners (process.reallyExit(0), a native exit(0))
+//     has no sign and is denied: silence alone is never a permit;
 //   - exit 0 with exactly one PreToolUse deny: that deny, re-serialized here;
 //   - anything else - another exit code, a signal, unparseable or extra output, a child that
 //     could not start, a child still running at the deadline: a deny with exit 0.
-// The child's stderr is the host transcript, as before.
+// The child's stderr is relayed to the host's stderr (the transcript), bounded, so the host's
+// output handles are held by this process alone: a killed child whose teardown the OS defers (a
+// scanner holding it in a kernel wait) cannot keep the host waiting for end-of-file.
 //
 // What this cannot close: a stall of THIS process before its timer is armed (node itself not
-// starting) - only the host timeout ends that; this file loads nothing but node built-ins.
+// starting) or while it starts the child (process creation held by a scanner in this process's
+// context) - only the host timeout ends those; this file loads nothing but node built-ins.
 const { spawn } = require("node:child_process");
 const fs = require("node:fs");
 const path = require("node:path");
@@ -38,8 +43,20 @@ const SUPERVISOR_MARGIN_MS = 1500;
 const MAX_DENY_BYTES = 3584;
 // The child's stdout is at most one bounded deny; anything far larger is not a decision.
 const MAX_CHILD_STDOUT_BYTES = 16384;
+// The child's log lines relayed to the host's stderr, in total. Written synchronously and kept,
+// with the supervisor's own short reason lines, under the smallest pipe buffer a host hands a hook
+// (4 KiB), so a host that never reads stderr cannot block this process's event loop - and with it
+// the deadline. Lines past the bound are dropped with one note.
+const MAX_STDERR_RELAY_BYTES = 2048;
+// The shim's permit sign (src/hook/shim.cjs PERMIT_SIGN), on the private fd 3 pipe.
+const PERMIT_SIGN = "atbash-permit\n";
 const WRITE_RETRY_WAIT_MS = 25;
 const WRITE_STALL_BUDGET_MS = 2000;
+// The write to the host is bounded in wall-clock time as well as by the stall budget: a transport
+// that keeps taking one byte between refusals is never "stalled", and a 900-byte deny through it
+// took over 45 s in the shim before the shim got the same bound. No retry starts after this many
+// ms of uptime - 1.5 s past the supervisor's latest possible deadline, 1.5 s under the host's 35 s.
+const WRITE_CEILING_MS = MAX_DEADLINE_MS + SUPERVISOR_MARGIN_MS + 1500;
 
 function shimDeadlineMs(raw) {
   if (raw === undefined || raw.trim() === "") return DEFAULT_DEADLINE_MS;
@@ -87,17 +104,40 @@ function childDeny(stdout) {
   return null;
 }
 
+// The supervisor's deadline, in ms of this process's uptime.
+const DEADLINE_AT_MS = shimDeadlineMs(process.env.ATBASH_HOOK_DEADLINE_MS) + SUPERVISOR_MARGIN_MS;
+
 let decided = false;
 let child = null;
 let deadlineTimer = null;
 
+function uptimeMs() {
+  return Math.ceil(process.uptime() * 1000);
+}
+
 function writeAllSync(text) {
   // Every byte or an error, retried on EAGAIN without outliving the host's timeout (the shim's
-  // writeDecisionSync, without its in-process adversary handling: nothing else runs here).
+  // writeDecisionSync, without its in-process adversary handling: nothing else runs here). The
+  // first attempt always happens; retries stop at the stall budget or at the give-up: 1.5 s past
+  // this run's deadline, or one stall budget after the first attempt if that is later, and never
+  // past WRITE_CEILING_MS.
   const buffer = Buffer.from(text, "utf8");
   let offset = 0;
-  let lastProgress = Date.now();
+  let attempts = 0;
+  const firstAttempt = uptimeMs();
+  const giveUp = Math.min(
+    WRITE_CEILING_MS,
+    Math.max(DEADLINE_AT_MS + 1500, firstAttempt + WRITE_STALL_BUDGET_MS),
+  );
+  let lastProgress = firstAttempt;
   while (offset < buffer.length) {
+    if (attempts > 0) {
+      const now = uptimeMs();
+      if (now >= giveUp || now - lastProgress >= WRITE_STALL_BUDGET_MS) {
+        throw Object.assign(new Error("the decision could not be written"), { code: "ETIMEDOUT" });
+      }
+    }
+    attempts += 1;
     try {
       const written = writeSync(1, buffer, offset, buffer.length - offset);
       if (!Number.isInteger(written) || written < 0 || written > buffer.length - offset) {
@@ -105,14 +145,11 @@ function writeAllSync(text) {
       }
       if (written > 0) {
         offset += written;
-        lastProgress = Date.now();
+        lastProgress = uptimeMs();
         continue;
       }
     } catch (error) {
       if (!(error && error.code === "EAGAIN")) throw error;
-    }
-    if (Date.now() - lastProgress >= WRITE_STALL_BUDGET_MS) {
-      throw Object.assign(new Error("the decision could not be written"), { code: "ETIMEDOUT" });
     }
     Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, WRITE_RETRY_WAIT_MS);
   }
@@ -165,19 +202,15 @@ process.on("exit", () => {
 });
 
 // Armed first, before the child exists: the clock counts from this process's start.
-const budgetMs =
-  shimDeadlineMs(process.env.ATBASH_HOOK_DEADLINE_MS) +
-  SUPERVISOR_MARGIN_MS -
-  Math.ceil(process.uptime() * 1000);
 deadlineTimer = setTimeout(
   () => deny("Atbash ERROR: the safety check did not finish before the host's hook timeout."),
-  Math.max(0, budgetMs),
+  Math.max(0, DEADLINE_AT_MS - uptimeMs()),
 );
 
 try {
   child = spawn(process.execPath, [path.join(__dirname, "pre-tool-use-shim.cjs")], {
-    env: process.env,
-    stdio: ["pipe", "pipe", "inherit"],
+    env: { ...process.env, ATBASH_HOOK_PERMIT_FD: "3" },
+    stdio: ["pipe", "pipe", "pipe", "pipe"],
     windowsHide: true,
   });
 } catch {
@@ -194,6 +227,26 @@ if (!decided) {
     if (size > MAX_CHILD_STDOUT_BYTES) overflow = true;
     else chunks.push(chunk);
   });
+  let sign = "";
+  child.stdio[3].on("data", (chunk) => {
+    if (sign.length <= PERMIT_SIGN.length) sign += chunk.toString("utf8");
+  });
+  child.stdio[3].on("error", () => {});
+  let relayed = 0;
+  child.stderr.on("data", (chunk) => {
+    if (relayed >= MAX_STDERR_RELAY_BYTES) return;
+    const room = MAX_STDERR_RELAY_BYTES - relayed;
+    relayed += Math.min(chunk.length, room);
+    try {
+      writeSync(2, chunk.subarray(0, room));
+      if (relayed >= MAX_STDERR_RELAY_BYTES) {
+        writeSync(2, "\n[Atbash: further hook log lines were dropped]\n");
+      }
+    } catch {
+      // the transcript is optional; the decision is on stdout
+    }
+  });
+  child.stderr.on("error", () => {});
   child.stdout.on("error", () => {});
   child.stdin.on("error", () => {});
   // The host's tool-call payload, passed through unchanged.
@@ -203,7 +256,7 @@ if (!decided) {
     if (decided) return;
     const stdout = Buffer.concat(chunks).toString("utf8");
     if (code === 0 && signal === null && !overflow) {
-      if (stdout === "") {
+      if (stdout === "" && sign === PERMIT_SIGN) {
         finish("");
         return;
       }

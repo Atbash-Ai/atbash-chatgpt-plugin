@@ -34,13 +34,14 @@ import { basename, dirname, isAbsolute, join } from "node:path";
 export const HOOK_SCRIPT = "pre-tool-use.cjs";
 export const HOOK_MATCHER = "*";
 export const HOOK_TIMEOUT_SECONDS = 35;
-/** The smallest hook timeout that can outlast the shim's own worst case: its largest deadline
- *  (30 s) plus the two-second stall budget of the deny write plus a second for the exit. The host
- *  cuts a hook off when its timeout expires and proceeds with the tool call (measured on Codex
- *  0.154.0), so an entry under this is registered but not a gate; a missing timeout leaves the
- *  host's own default, which is not measured, so it does not count either. The installer writes
- *  HOOK_TIMEOUT_SECONDS. */
-export const HOOK_TIMEOUT_FLOOR_SECONDS = 33;
+/** The smallest hook timeout that can outlast the hook's own worst case, which is now the
+ *  supervisor's (src/hook/supervisor.cjs): its latest deadline (the largest shim deadline, 30 s,
+ *  plus 1.5 s), then a deny write that starts no retry past 33 s of uptime, plus a second for the
+ *  exit. The host cuts a hook off when its timeout expires and proceeds with the tool call
+ *  (measured on Codex 0.154.0), so an entry under this is registered but not a gate; a missing
+ *  timeout leaves the host's own default, which is not measured, so it does not count either. The
+ *  installer writes HOOK_TIMEOUT_SECONDS. */
+export const HOOK_TIMEOUT_FLOOR_SECONDS = 34;
 export const HOOK_STATUS_MESSAGE = "Checking action with Atbash";
 
 /** A refusal: the target cannot be handled safely, and nothing has been written. */

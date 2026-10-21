@@ -1560,6 +1560,14 @@ test("install-hook: an Atbash entry the host would not run - a narrow matcher, a
         },
         warning: /timeout 32;.*cuts a hook off/,
       },
+      // A timeout of 33 outlasts the supervisor's deadline (31.5 s) but not its deny write's
+      // give-up (33 s of uptime) and the exit.
+      {
+        edit: (d) => {
+          (d.hooks?.PreToolUse?.[0]?.hooks?.[0] as HookShape).timeout = 33;
+        },
+        warning: /timeout 33;.*cuts a hook off/,
+      },
       // No timeout at all leaves the host's default, which is not measured.
       {
         edit: (d) => {

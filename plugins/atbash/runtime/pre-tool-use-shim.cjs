@@ -100,6 +100,15 @@ const TRUNCATION_MARK = " [reason truncated by the hook]";
 const WRITE_RETRY_WAIT_MS = 25;
 const WRITE_STALL_BUDGET_MS = 2000;
 const CHANNEL = Symbol.for("atbash.hook.answer");
+// The supervisor (src/hook/supervisor.cjs) runs this shim in a child process and needs a positive
+// sign that a silent exit is a permit: a process that ends 0 with an empty stdout WITHOUT running
+// its exit listeners (process.reallyExit(0), a native exit(0) from the addon) never reaches the
+// backstop below, and without the sign the supervisor would take that silence for a permit. The
+// supervisor sets ATBASH_HOOK_PERMIT_FD to "3" and opens fd 3 as a private pipe; the sign is
+// written from the exit listener only, so an exit that skips the listeners never writes it. With
+// the variable unset (the shim run directly) nothing is written to any descriptor but 1 and 2.
+const PERMIT_FD = process.env.ATBASH_HOOK_PERMIT_FD === "3" ? 3 : null;
+const PERMIT_SIGN = "atbash-permit\n";
 
 function resolveDeadlineMs(raw) {
   if (raw === undefined || raw.trim() === "") return DEFAULT_DEADLINE_MS;
@@ -409,7 +418,16 @@ process.on("exit", () => {
     // stdout could not take it.
     return;
   }
-  if (permitted) return;
+  if (permitted) {
+    if (PERMIT_FD !== null) {
+      try {
+        writeSync(PERMIT_FD, PERMIT_SIGN);
+      } catch {
+        // no sign: the supervisor denies, which is the safe side
+      }
+    }
+    return;
+  }
   // Another load of this shim already put the decision on stdout (a refused second load): one
   // decision, not two.
   if (decisionOnStdout()) return;
