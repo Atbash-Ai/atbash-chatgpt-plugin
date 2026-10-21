@@ -22,11 +22,13 @@ Codex installs a snapshot of the plugin from the Git ref and runs the committed 
 Use Node.js 22.13.0 or newer on macOS arm64, Linux x64/arm64 (glibc), or Windows x64. Add this repository as a Codex marketplace, from `main` for production or `dev` for testing:
 
 ```bash
-codex plugin marketplace add Atbash-Ai/atbash-chatgpt-plugin --ref main   # production
-codex plugin marketplace add Atbash-Ai/atbash-chatgpt-plugin --ref dev    # development
+codex plugin marketplace add Atbash-Ai/atbash-chatgpt-plugin --ref main
+codex plugin add atbash@atbash-ai
 ```
 
-Open the Plugins Directory in Codex, choose the Atbash AI marketplace, and install **Atbash Safety**. The installed plugin includes the SDK runtime; no local build is needed. On macOS, if `codex` is not on your `PATH`, the ChatGPT app bundles the CLI at `/Applications/ChatGPT.app/Contents/Resources/codex-cli/bin/codex`.
+For team testing, use `--ref dev` instead of `--ref main` when adding the marketplace. Choose one ref for the `atbash-ai` marketplace at a time.
+
+Restart the ChatGPT desktop app or start a new Codex session after installation. You can also install through the Plugins Directory by choosing the Atbash AI marketplace and **Atbash Safety**. The installed plugin includes the SDK runtime; no local build is needed. On macOS, if `codex` is not on your `PATH`, the ChatGPT app bundles the CLI at `/Applications/ChatGPT.app/Contents/Resources/codex-cli/bin/codex`.
 
 Check which environment is installed:
 

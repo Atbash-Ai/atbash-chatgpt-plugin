@@ -5,6 +5,7 @@ import { existsSync, mkdtempSync, readdirSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import test from "node:test";
+import { createRequire } from "node:module";
 
 import { NOT_SET_UP_REASON } from "../src/hook/bootstrap.js";
 import type { PreToolUseInput } from "../src/hook/protocol.js";
@@ -366,4 +367,25 @@ test("bundled SDK uses its environment's BRIDs and node pools for defaults and o
     );
     assert.equal(result.status, 0, `${directory}: ${result.stderr}`);
   }
+});
+
+test("production runtime uses the pinned stable SDK endpoint and both chain defaults", () => {
+  const require = createRequire(import.meta.url);
+  const loader = require(`${process.cwd()}/runtime/atbash-native.cjs`);
+  const native = require(
+    `${process.cwd()}/runtime/native/${process.platform}-${process.arch}/atbash.node`,
+  );
+  const sdk = JSON.parse(readFileSync("package.json", "utf8")).dependencies["@atbash/sdk"];
+  assert.equal(sdk, "0.9.2");
+  assert.equal(loader.DEFAULT_ENDPOINT, "https://atbash.ai");
+  for (const key of [
+    "DEFAULT_ENDPOINT",
+    "DEFAULT_BLOCKCHAIN_RID",
+    "DEFAULT_PRIVATE_BLOCKCHAIN_RID",
+  ]) {
+    assert.equal(loader[key], native[key], key);
+  }
+  assert.deepEqual(loader.defaultChromiaNodeUrls(), native.defaultChromiaNodeUrls());
+  assert.deepEqual(loader.defaultPrivateNodeUrls(), native.defaultPrivateNodeUrls());
+  assert.equal(existsSync("runtime/install-hook.cjs"), true);
 });

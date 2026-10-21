@@ -6,6 +6,8 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { checkPublicLinks } from "./check-public-links.mjs";
+
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const plugin = join(root, "plugins/atbash");
 const metadata = JSON.parse(await readFile(join(plugin, "package.json"), "utf8"));
@@ -16,6 +18,14 @@ const sdkPackage = environments[runtime.environment]?.sdkPackage;
 const pinned = metadata.dependencies?.[sdkPackage] ?? metadata.devDependencies?.[sdkPackage] ?? "";
 if (sdkPackage === undefined || runtime.sdkVersion !== pinned.replace(/^npm:@atbash\/sdk@/, "")) {
   throw new Error("Runtime SDK differs from the pinned dependency. Rebuild before packaging.");
+}
+const pluginManifest = JSON.parse(
+  await readFile(join(plugin, ".codex-plugin/plugin.json"), "utf8"),
+);
+console.log("Checking public website, support, privacy policy, and terms links...");
+const publicLinkChecks = await checkPublicLinks(pluginManifest.interface);
+for (const check of publicLinkChecks.results) {
+  console.log(`${check.field}: HTTP ${check.status} ${check.finalUrl}`);
 }
 const output = join(root, "artifacts");
 const staging = await mkdtemp(join(tmpdir(), "atbash-submission-"));
@@ -28,7 +38,9 @@ try {
   await mkdir(output, { recursive: true });
   const full = join(staging, "plugin");
   await mkdir(full);
-  const included = [".codex-plugin", "assets", "hooks", "runtime", "skills"];
+  // The public archive excludes bundled hook registration. The Git marketplace
+  // keeps hooks/hooks.json; archive users register the local installer explicitly.
+  const included = [".codex-plugin", "assets", "runtime", "skills"];
   for (const entry of included)
     await cp(join(plugin, entry), join(full, entry), { recursive: true });
   const archives = [
@@ -61,6 +73,7 @@ try {
     pluginVersion: metadata.version,
     environment: runtime.environment,
     sdkVersion: runtime.sdkVersion,
+    publicLinkChecks,
     files,
   };
   await writeFile(
