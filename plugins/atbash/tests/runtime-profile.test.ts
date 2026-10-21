@@ -6,6 +6,7 @@ import test from "node:test";
 
 import { generateKeypair } from "@atbash/sdk";
 import { resolveGuardConfiguration } from "../src/atbash/guard.js";
+import { createStatusClient } from "../src/atbash/status.js";
 import { loadSelectedRuntimeProfile } from "../src/control/runtime-profile.js";
 import { ControlStore } from "../src/control/store.js";
 
@@ -56,6 +57,8 @@ test("selected host profile resolves a matching local credential", async () => {
     assert.equal(configuration.profileId, "codex-one");
     assert.equal(configuration.agentKey, keypair.priv_key);
     assert.equal(configuration.orgName, "Acme");
+    // Status, which setup continue reports as agentStatus, runs as the same agent.
+    assert.equal(createStatusClient().pubkey, keypair.pub_key);
 
     process.env.ATBASH_ORG_NAME = "OtherOrg";
     assert.throws(() => loadSelectedRuntimeProfile("codex"), /conflicts/);

@@ -1,6 +1,6 @@
 import { existsSync, lstatSync, readFileSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
-import { dirname, isAbsolute, join, resolve, sep } from "node:path";
+import { basename, dirname, isAbsolute, join, resolve, sep } from "node:path";
 import { getConfigPath, keyPathCandidates } from "@atbash/sdk";
 
 import type { ControlHost } from "../control/protocol.js";
@@ -87,10 +87,15 @@ function pathExists(path: string): boolean {
 }
 
 function canonical(path: string): string {
+  const absolute = resolve(path);
   try {
-    return realpathSync(path);
+    return realpathSync(absolute);
   } catch {
-    return resolve(path);
+    // Not created yet: canonicalize the nearest existing parent instead, so a
+    // link above it (macOS /var -> /private/var) resolves the same on both sides
+    // of a comparison with a path that does exist.
+    const parent = dirname(absolute);
+    return parent === absolute ? absolute : join(canonical(parent), basename(absolute));
   }
 }
 
