@@ -57,6 +57,7 @@ import {
   sameIdentity,
   validateHookScriptPath,
   verifyEntryRoundTrip,
+  decodeStderr,
   writeHooksFileAtomically,
   type AtbashIdentity,
   type AtbashMatcherGroup,
@@ -1878,4 +1879,15 @@ test("install-hook: the probe's scratch folder is removed after a pass and after
   } finally {
     rmSync(home, { force: true, recursive: true });
   }
+});
+
+test("install-hook: the probe's stderr is read as UTF-16 only when it carries NUL bytes", () => {
+  // Windows PowerShell 5.1 writes its startup errors as UTF-16LE; read as UTF-8 they come out as
+  // NUL-separated garbage in the refusal message. Real UTF-8 output (node, /bin/sh) has no NUL.
+  const powershell = Buffer.from("The type initializer threw an exception.", "utf16le");
+  assert.equal(decodeStderr(powershell), "The type initializer threw an exception.");
+  assert.ok(!decodeStderr(powershell).includes(String.fromCharCode(0)), "no NUL characters");
+  assert.equal(decodeStderr(Buffer.from("héllo from node ✓", "utf8")), "héllo from node ✓");
+  assert.equal(decodeStderr(Buffer.alloc(0)), "");
+  assert.equal(decodeStderr(null), "");
 });

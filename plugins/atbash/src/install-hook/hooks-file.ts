@@ -466,7 +466,7 @@ export function probeRegisteredCommand(
  *  errors as UTF-16LE, which a UTF-8 decode turns into NUL-separated garbage; real UTF-8 output
  *  (node, `/bin/sh`) contains no NUL bytes, so their presence selects the decoding. Only stderr:
  *  stdout is read strictly as UTF-8, as the host reads it. */
-function decodeStderr(bytes: Buffer | null): string {
+export function decodeStderr(bytes: Buffer | null): string {
   if (bytes === null || bytes.length === 0) return "";
   return bytes.includes(0) ? bytes.toString("utf16le") : bytes.toString("utf8");
 }
@@ -517,7 +517,9 @@ function runProbe(command: string, platform: NodeJS.Platform, timeoutMs: number)
     const code = (result.error as NodeJS.ErrnoException | undefined)?.code;
     // EPIPE with an exit status is a command that ended before reading the payload: report its
     // exit (below), not the write error - a race that made the refusal reason change from run to
-    // run. Either way it is a refusal.
+    // run. A non-zero exit is refused below; an exit of 0 still has to put one strict UTF-8 deny
+    // on stdout. The probe does not prove the payload was read: the registered command is pinned
+    // to the real hook script (verifyEntryRoundTrip), and that hook denies on missing input too.
     if (result.error !== undefined && !(code === "EPIPE" && result.status !== null)) {
       return fail(
         code === "ETIMEDOUT" ? `no decision within ${timeoutMs} ms` : result.error.message,
