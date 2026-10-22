@@ -7,6 +7,8 @@ import test from "node:test";
 import {
   hasAtbashConfiguration,
   isSetupToolCall,
+  NOT_SET_UP_REASON,
+  notSetUpReason,
   splitPlainCommand,
 } from "../src/hook/bootstrap.js";
 import { makeHookInput } from "./fixtures.js";
@@ -158,6 +160,142 @@ test("a skill read cannot be pointed outside the plugin's skills directory", () 
   ]) {
     assert.equal(isSetupToolCall(shell(command), options), false, command);
   }
+});
+
+// Captured from Codex 0.163 on macOS, which reads a skill with sed when the user
+// asks in plain words ("set up atbash") instead of invoking $atbash-setup.
+test("allows the print-only sed, head and tail reads Codex uses on macOS", () => {
+  const skill = `${ROOT}/skills/atbash-setup/SKILL.md`;
+  for (const command of [
+    `sed -n '1,240p' ${skill}`,
+    `sed -n '1,200p' '${skill}'`,
+    `sed -n 1,200p ${skill}`,
+    `sed -n '5p' ${skill}`,
+    `sed -n '1,$p' ${skill}`,
+    `head ${skill}`,
+    `head -n 200 ${skill}`,
+    `tail -n 50 ${skill}`,
+    `tail -n +40 ${skill}`,
+  ]) {
+    assert.equal(isSetupToolCall(shell(command), options), true, command);
+  }
+  // Relative to the call's own working directory, as Codex sends it.
+  const fromSkill = makeHookInput({
+    tool_name: "Bash",
+    tool_input: { command: "sed -n '1,240p' SKILL.md", workdir: `${ROOT}/skills/atbash-setup` },
+  });
+  assert.equal(isSetupToolCall(fromSkill, options), true);
+});
+
+test("sed, head and tail match only their print-only shapes", () => {
+  const skill = `${ROOT}/skills/atbash-setup/SKILL.md`;
+  for (const command of [
+    `sed -i '1,240p' ${skill}`, // edits in place
+    `sed -n -i '1p' ${skill}`,
+    `sed -n '1,240p' -i ${skill}`,
+    `sed '1,240p' ${skill}`, // no -n
+    `sed -n '1w /tmp/out' ${skill}`, // writes another file
+    `sed -n '1r /etc/passwd' ${skill}`, // reads another file
+    `sed -n '1e id' ${skill}`, // runs a command
+    `sed -n 's/a/b/w /tmp/out' ${skill}`,
+    `sed -n '1e id;1p' ${skill}`, // ends in p, but `e` runs the rest of the line
+    `sed -n 's/a/b/p' ${skill}`, // a script, not a line range
+    `sed -n '1p;2p' ${skill}`,
+    `sed -n -e '1p' ${skill}`,
+    `sed -n '1,240p' ${skill} ${ROOT}/runtime/manifest.json`, // a second file
+    `sed -n '1,240p' ${ROOT}/runtime/manifest.json`, // outside skills/
+    `sed -n '1,240p' ~/.ssh/id_rsa`,
+    `sed -n '1,240p'`,
+    `head -c 100 ${skill}`,
+    `head -n -5 ${skill}`,
+    `head -5 ${skill}`,
+    `tail -f ${skill}`,
+    `tail -n 5 -f ${skill}`,
+    `tail -n +40 ${skill} ${ROOT}/runtime/manifest.json`,
+    `head -n 200 ${ROOT}/../secrets.txt`,
+    `sed -n '1,240p' ${skill} && cat ~/.ssh/id_rsa`,
+    `sed -n '1,240p' ${skill} | sh`,
+  ]) {
+    assert.equal(isSetupToolCall(shell(command), options), false, command);
+  }
+  // An option in the file position is refused even from inside skills/: GNU tools
+  // take options anywhere on the line, and `tail +1f` is "from line 1, follow".
+  for (const command of [
+    "tail -n 5 -f",
+    "sed -n '1p' -i",
+    "head -n 5 --follow",
+    "tail +1f",
+    "tail +5",
+    "head +5",
+  ]) {
+    const inSkill = makeHookInput({
+      tool_name: "Bash",
+      tool_input: { command, workdir: `${ROOT}/skills/atbash-setup` },
+    });
+    assert.equal(isSetupToolCall(inSkill, options), false, command);
+  }
+});
+
+// `..` is resolved as text, but the shell follows a directory link before it, so
+// `skills/link/../x` could leave skills/ through a link inside it.
+test("a skill read refuses any '..' in the path", () => {
+  for (const command of [
+    `sed -n '1p' ${ROOT}/skills/atbash-setup/../atbash-setup/SKILL.md`,
+    `cat ${ROOT}/skills/link/../outside.txt`,
+    `tail -n 1 skills\\link\\..\\outside.txt`,
+  ]) {
+    assert.equal(isSetupToolCall(shell(command, ROOT), options), false, command);
+  }
+});
+
+// PowerShell treats curly quotes as quotes; this splitter does not, so they would
+// end PowerShell's string inside what reads here as one quoted word.
+test("refuses curly quotes, which PowerShell reads as quotes", () => {
+  const inSkill = (command: string) =>
+    makeHookInput({
+      tool_name: "Bash",
+      tool_input: { command, workdir: `${ROOT}/skills/atbash-setup` },
+    });
+  for (const command of [
+    "cat 'x’;New-Item pwned | Out-Null;’'",
+    "Get-Content -Raw 'x’;New-Item pwned | Out-Null;’'",
+    "sed -n '1p' 'x’;New-Item pwned | Out-Null;’'",
+    'tail -n 5 "x”;New-Item pwned | Out-Null;“"',
+    `node ${LAUNCHER} setup inspect 'x’;calc;’'`,
+  ]) {
+    assert.equal(splitPlainCommand(command), null, command);
+    assert.equal(isSetupToolCall(inSkill(command), options), false, command);
+  }
+});
+
+test("the not-set-up denial names a read that setup mode allows", () => {
+  const reason = notSetUpReason(ROOT);
+  assert.ok(reason.startsWith(NOT_SET_UP_REASON), reason);
+  const hint = /run: (cat '[^']+')$/.exec(reason)?.[1];
+  assert.equal(hint, `cat '${ROOT}/skills/atbash-setup/SKILL.md'`);
+  assert.equal(isSetupToolCall(shell(hint!), options), true);
+});
+
+test("the denial leaves the hint out when it cannot be given safely", () => {
+  assert.equal(notSetUpReason(undefined), NOT_SET_UP_REASON);
+  assert.equal(notSetUpReason("/opt/it's/atbash"), NOT_SET_UP_REASON); // cannot be single-quoted
+  assert.equal(notSetUpReason("/opt/a\nb/atbash"), NOT_SET_UP_REASON);
+  assert.equal(notSetUpReason("/opt/a\u0001b/atbash"), NOT_SET_UP_REASON);
+  assert.equal(notSetUpReason("/opt/it’s/atbash"), NOT_SET_UP_REASON); // a PowerShell quote
+  // The hook collapses whitespace runs, which would rewrite the path in the hint.
+  assert.equal(notSetUpReason("/Users/x/My  Plugins/atbash"), NOT_SET_UP_REASON);
+  assert.equal(notSetUpReason("/Users/x/My Plugins/atbash"), NOT_SET_UP_REASON);
+  assert.notEqual(notSetUpReason("/Users/x/My Plugins/atbash"), NOT_SET_UP_REASON);
+});
+
+test("the hint is kept up to the reason cap and left out past it", () => {
+  const reasonFor = (root: string) =>
+    `${NOT_SET_UP_REASON} To read the setup instructions, run: cat '${root}/skills/atbash-setup/SKILL.md'`;
+  const fixed = reasonFor("/").length - 1; // everything but the root's own characters
+  const rootOf = (length: number) => `/${"x".repeat(length - 1)}`;
+  assert.equal(reasonFor(rootOf(800 - fixed)).length, 800);
+  assert.equal(notSetUpReason(rootOf(800 - fixed)), reasonFor(rootOf(800 - fixed)));
+  assert.equal(notSetUpReason(rootOf(801 - fixed)), NOT_SET_UP_REASON);
 });
 
 // Captured from Codex 0.160.0: writing a file is a shell command, so it is

@@ -10,7 +10,11 @@ import { makeHookInput } from "./fixtures.js";
 
 /** Stubbed so these tests never depend on what is configured on the machine running them. */
 function bootstrap(configured: boolean, setupCall = false): SetupBootstrap {
-  return { hasConfiguration: () => configured, isSetupCall: () => setupCall };
+  return {
+    hasConfiguration: () => configured,
+    isSetupCall: () => setupCall,
+    notSetUpReason: () => NOT_SET_UP_REASON,
+  };
 }
 
 const missingConfiguration = () => {
@@ -145,6 +149,15 @@ test("without any configuration, allows only setup calls", async () => {
 
   assert.deepEqual(setup, { allow: true, source: "setup-bootstrap" });
   assert.deepEqual(other, { allow: false, verdict: "ERROR", reason: NOT_SET_UP_REASON });
+});
+
+test("the not-set-up denial carries the bootstrap's own reason, with its read hint", async () => {
+  const hinted = `${NOT_SET_UP_REASON} To read the setup instructions, run: cat '/p/skills/atbash-setup/SKILL.md'`;
+  const outcome = await evaluatePreToolUse(makeHookInput(), missingConfiguration, {
+    ...bootstrap(false, false),
+    notSetUpReason: () => hinted,
+  });
+  assert.deepEqual(outcome, { allow: false, verdict: "ERROR", reason: hinted });
 });
 
 // The narrowest part of the design: setup mode is for a machine that has never

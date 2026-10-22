@@ -1,7 +1,7 @@
 import type { Decision, ToolCallInput } from "@atbash/sdk";
 
 import { createAtbashGuard, type ToolCallGuard } from "../atbash/guard.js";
-import { createSetupBootstrap, NOT_SET_UP_REASON, type SetupBootstrap } from "./bootstrap.js";
+import { createSetupBootstrap, type SetupBootstrap } from "./bootstrap.js";
 import { buildAtbashContext } from "./context.js";
 import { sanitizeReason, type PreToolUseInput } from "./protocol.js";
 
@@ -51,7 +51,7 @@ export async function evaluatePreToolUse(
     if (!bootstrap.hasConfiguration()) {
       return bootstrap.isSetupCall(input)
         ? { allow: true, source: "setup-bootstrap" }
-        : { allow: false, verdict: "ERROR", reason: NOT_SET_UP_REASON };
+        : { allow: false, verdict: "ERROR", reason: bootstrap.notSetUpReason() };
     }
     // A configuration exists but cannot be used. Still a denial — but the
     // operator sees this on every tool call, so it carries the way out.
