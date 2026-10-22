@@ -73,7 +73,12 @@ const NODE_PATH = realpathSync(process.execPath);
 const NODE_COMMAND = WIN32 ? NODE_PATH.replaceAll("\\", "/") : NODE_PATH;
 // PowerShell's call operator on Windows (Codex runs hook commands through PowerShell there).
 const CALL = WIN32 ? "& " : "";
-const OWN_COMMAND = `${CALL}"${NODE_COMMAND}" "${COMMAND_PATH}"`;
+// The command the installer writes. On Windows both keys carry the one backslash spelling the probe
+// actually ran (command === commandWindows), so the summary never names a string that was not probed;
+// COMMAND_PATH / NODE_COMMAND above stay forward-slash for the hand-written entries the tests merge with.
+const OWN_COMMAND = WIN32
+  ? `& "${NODE_PATH}" "${REAL_HOOK_SCRIPT}"`
+  : `"${NODE_COMMAND}" "${COMMAND_PATH}"`;
 // Plain interpreter paths for the pure (platform-parameterised) cases.
 const POSIX_NODE = "/usr/local/bin/node";
 const WIN32_NODE = "C:\\Program Files\\nodejs\\node.exe";
@@ -1388,7 +1393,8 @@ test("install-hook: the built installer (dist and the committed runtime) registe
     const home = tempHome();
     try {
       const sibling = realpathSync(join(resolve(entry, ".."), "pre-tool-use.cjs"));
-      const registered = WIN32 ? sibling.replaceAll("\\", "/") : sibling;
+      // The installer writes the realpath as it is: backslashes on Windows, in both keys.
+      const registered = sibling;
       const run = (args: string[]) =>
         spawnSync(process.execPath, [entry, ...args], {
           cwd: process.cwd(),
@@ -1406,7 +1412,7 @@ test("install-hook: the built installer (dist and the committed runtime) registe
       assert.equal(install.status, EXIT_OK, install.stderr);
       assert.match(install.stdout, /Installed the Atbash hook/, install.stdout);
       assert.match(install.stdout, /run \/hooks and trust/, install.stdout);
-      const expectedCommand = `${CALL}"${NODE_COMMAND}" "${registered}"`;
+      const expectedCommand = `${CALL}"${NODE_PATH}" "${registered}"`;
       assert.ok(install.stdout.includes(`hook command: ${expectedCommand}`), install.stdout);
       assert.ok(install.stdout.includes(`interpreter:  ${NODE_PATH}`), install.stdout);
       const hooksPath = join(home, "hooks.json");
