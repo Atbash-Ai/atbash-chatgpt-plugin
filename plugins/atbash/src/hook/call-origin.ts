@@ -1,5 +1,5 @@
 import { closeSync, constants, fstatSync, lstatSync, openSync, readSync } from "node:fs";
-import { isAbsolute } from "node:path";
+import { basename, dirname, isAbsolute } from "node:path";
 import { performance } from "node:perf_hooks";
 
 /**
@@ -15,6 +15,10 @@ import { performance } from "node:perf_hooks";
  *   imperative sentence) appeared in tool output earlier in the session, it shares at least two
  *   distinctive words with this call's argument values, and those words appear nowhere in what the
  *   user typed.
+ *
+ *   It is also "tool_output" when this call, or a call earlier in the tail, names the rollout file
+ *   or the sessions folder: the agent can write its own transcript, so a session it wrote to cannot
+ *   vouch for what the user typed (the stricter answer).
  *
  *   "unknown": anything else, including no transcript, an unreadable one, input too large to check
  *   within the time budget, or any doubt. Unknown changes nothing about how the call is judged.
@@ -461,10 +465,43 @@ function readItem(item: unknown, user: string[], untrusted: string[]): void {
  * (`{ type: "response_item", payload }`) and the older top-level shape. Malformed lines (including
  * a first line cut by the tail read) are skipped.
  */
-export function splitTranscript(lines: readonly string[]): TranscriptText {
+// Shorter than any line Codex writes (its timestamp field alone is 39 characters).
+const MIN_ENTRY_CHARS = 32;
+
+/**
+ * The tail's lines, in one linear scan. Lines shorter than MIN_ENTRY_CHARS are passed over without
+ * being cut out as strings, so a tail of hundreds of thousands of tiny lines costs one scan (governor
+ * review 2026-10-20). The first line, which the tail read may have cut, is always kept: splitTranscript
+ * scans it for the session's markers.
+ */
+function tailLines(text: string): string[] {
+  const lines: string[] = [];
+  let start = 0;
+  while (start <= text.length) {
+    const newline = text.indexOf("\n", start);
+    const end = newline === -1 ? text.length : newline;
+    const lineEnd = end > start && text.charCodeAt(end - 1) === 13 ? end - 1 : end;
+    if (start === 0 || lineEnd - start >= MIN_ENTRY_CHARS) lines.push(text.slice(start, lineEnd));
+    if (newline === -1) break;
+    start = newline + 1;
+  }
+  return lines;
+}
+
+export function splitTranscript(
+  lines: readonly string[],
+  sessionMarkers: readonly string[] = [],
+): TranscriptText {
   const user: string[] = [];
   const untrusted: string[] = [];
-  for (const line of lines) {
+  let touchesSession = false;
+  for (const [index, line] of lines.entries()) {
+    // Every line Codex writes is longer than this (its timestamp alone is 39 characters), so a
+    // shorter one is skipped unparsed: a 2 MiB tail of tiny lines stays linear and cheap
+    // (governor review 2026-10-20). Codex never writes such a line, so only garbage or a forged line
+    // is dropped, and a dropped line can only remove words from what counts as the user's. The cut
+    // first line is still scanned below for the session's markers.
+    if (line.length < MIN_ENTRY_CHARS && index > 0) continue;
     // One malformed or pathological line is skipped; it never discards the rest of the transcript.
     try {
       const entry: unknown = JSON.parse(line);
@@ -474,6 +511,16 @@ export function splitTranscript(lines: readonly string[]): TranscriptText {
         e.payload !== null && typeof e.payload === "object"
           ? (e.payload as Record<string, unknown>)
           : undefined;
+      const callItem = e.type === "response_item" ? payload : e;
+      if (
+        !touchesSession &&
+        sessionMarkers.length > 0 &&
+        typeof callItem?.type === "string" &&
+        callItem.type.endsWith("_call") &&
+        (namesSession(line, sessionMarkers) ||
+          namesSession(decodedCallText(callItem), sessionMarkers))
+      )
+        touchesSession = true;
       if (e.type === "response_item") readItem(payload, user, untrusted);
       else if (e.type === "event_msg") {
         if (payload?.type === "user_message" && typeof payload.message === "string")
@@ -492,10 +539,20 @@ export function splitTranscript(lines: readonly string[]): TranscriptText {
         }
       } else readItem(e, user, untrusted);
     } catch {
+      // The tail read cuts its first line, which then fails to parse. A call there that named the
+      // session is still seen: the raw fragment is scanned for the markers (tighten-only).
+      if (
+        lines.length > 0 &&
+        index === 0 &&
+        !touchesSession &&
+        sessionMarkers.length > 0 &&
+        namesSession(line, sessionMarkers)
+      )
+        touchesSession = true;
       continue;
     }
   }
-  return { userText: user.join("\n"), untrustedText: untrusted.join("\n") };
+  return { userText: user.join("\n"), untrustedText: untrusted.join("\n"), touchesSession };
 }
 
 export interface TranscriptText {
@@ -503,6 +560,88 @@ export interface TranscriptText {
   userText: string;
   /** Tool results and attachments: content the agent read but the user did not write. */
   untrustedText: string;
+  /** A call in the tail named the rollout file or the sessions folder (see sessionMarkersFor). */
+  touchesSession?: boolean;
+}
+
+/** Backslashes as slashes, lower case: one spelling of a path for every shell and JSON escape. */
+function normalizePathText(text: string): string {
+  return text.replace(/\\+/g, "/").toLowerCase();
+}
+
+/**
+ * What names this session's transcript in a call: the rollout file's name and the sessions folder
+ * that holds it (Codex's own, and the one in the path when it sits under a sessions folder). The
+ * transcript's own folder is not a marker unless it is under a sessions folder: a transcript in a
+ * general folder would otherwise flag every call that works there.
+ *
+ * Security review 2026-10-04 (MEDIUM): an injected agent with a shell can append a forged user line
+ * to its own rollout file and then make the harmful call, so a session whose transcript a call
+ * touched cannot vouch for the user's words.
+ */
+export function sessionMarkersFor(transcriptPath: string): string[] {
+  const markers = [normalizePathText(basename(transcriptPath)), ".codex/sessions/"];
+  const folder = `${normalizePathText(dirname(transcriptPath))}/`;
+  const sessions = folder.lastIndexOf("/sessions/");
+  if (sessions > 0) markers.push(folder.slice(0, sessions + "/sessions/".length));
+  return markers;
+}
+
+/**
+ * Spellings that reach a rollout without naming it (security re-review 2026-10-04): any path into
+ * Codex's home folder (`.codex/`, `.codex` at the end, `$CODEX_HOME`), or a rollout or sessions
+ * `.jsonl` named by pattern. Matching them only adds the fact (tighten-only): at worst the judge is
+ * more careful on a legitimate edit of Codex's own configuration. A path built at run time
+ * (concatenation, an encoded command, a script written first) is out of reach of any string check;
+ * the Codex sandbox, which does not let the agent write its sessions folder, is the control there.
+ */
+function namesCodexHome(t: string): boolean {
+  if (t.includes(".codex/") || /\.codex(?![\w.-])/.test(t) || t.includes("codex_home")) return true;
+  if (!t.includes(".jsonl")) return false;
+  return t.includes("rollout") || t.includes("sessions/");
+}
+
+/** The whole text is scanned, in one linear pass (a cap could hide a marker past it). */
+function namesSession(text: string, markers: readonly string[]): boolean {
+  const t = normalizePathText(text);
+  return namesCodexHome(t) || markers.some((marker) => marker.length > 0 && t.includes(marker));
+}
+
+/**
+ * A tail call item with its arguments decoded: a function call's `arguments` is itself a JSON string,
+ * so an escape the model wrote inside it (the dot of ".codex" as a unicode escape) survives in the
+ * raw line. Unicode escapes are spelled plainly; every other JSON escape is a backslash before the
+ * character itself, which namesSession already reads as a separator.
+ *
+ * Governor review 2026-10-20 (LOW): this was a parse and re-serialisation of every tail call, which
+ * took about a second on deeply nested arguments before the rule's budget starts. One linear
+ * replace decodes the same characters.
+ */
+function decodedCallText(item: Record<string, unknown>): string {
+  const parts: string[] = [];
+  for (const key of ["arguments", "input", "action"]) {
+    const value = item[key];
+    if (typeof value === "string") {
+      parts.push(value);
+      if (value.includes("\\u")) parts.push(decodeUnicodeEscapes(value));
+    } else if (value !== undefined) parts.push(callText(value));
+  }
+  return parts.join("\n");
+}
+
+function decodeUnicodeEscapes(text: string): string {
+  return text.replace(/\\u([0-9a-fA-F]{4})/g, (_, hex: string) =>
+    String.fromCharCode(Number.parseInt(hex, 16)),
+  );
+}
+
+/** The call's arguments as one string; anything that cannot be serialised is empty. */
+function callText(toolInput: unknown): string {
+  try {
+    return typeof toolInput === "string" ? toolInput : (JSON.stringify(toolInput) ?? "");
+  } catch {
+    return "";
+  }
 }
 
 /**
@@ -540,7 +679,10 @@ export function readTranscriptTail(
     const length = Math.min(stat.size, maxBytes);
     const buffer = Buffer.alloc(length);
     const bytesRead = readSync(fd, buffer, 0, length, stat.size - length);
-    return splitTranscript(buffer.subarray(0, bytesRead).toString("utf8").split(/\r?\n/));
+    return splitTranscript(
+      tailLines(buffer.subarray(0, bytesRead).toString("utf8")),
+      sessionMarkersFor(path),
+    );
   } catch {
     return null;
   } finally {
@@ -554,14 +696,20 @@ export function readTranscriptTail(
   }
 }
 
-/** The fact for one call. Never throws; no transcript, or any failure, is "unknown". */
+/**
+ * The fact for one call. Never throws; no transcript, or any failure, is "unknown". A call that names
+ * the session's transcript, now or earlier in the tail, is "tool_output" (see sessionMarkersFor).
+ */
 export function callOriginFor(
   toolInput: unknown,
   transcriptPath: string | null | undefined,
 ): CallOrigin {
   if (typeof transcriptPath !== "string" || transcriptPath.length === 0) return "unknown";
   try {
-    return classifyCallOrigin(toolInput, readTranscriptTail(transcriptPath));
+    if (namesSession(callText(toolInput), sessionMarkersFor(transcriptPath))) return "tool_output";
+    const transcript = readTranscriptTail(transcriptPath);
+    if (transcript?.touchesSession === true) return "tool_output";
+    return classifyCallOrigin(toolInput, transcript);
   } catch {
     return "unknown";
   }
