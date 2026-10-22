@@ -1012,7 +1012,10 @@ test("install-hook: the registered command string is executable by the host shel
   const home = tempHome();
   try {
     // An interpreter that exists, is absolute and passes the allowlist, but is not a program.
-    const fakeNode = join(home, "fake-node");
+    // On Windows an extensionless file sent to PowerShell's call operator is handed to the shell,
+    // which opens a "How do you want to open this file?" window for every run; with .exe Windows
+    // refuses it as "not a valid application" instead. Either way it is not a program.
+    const fakeNode = join(home, WIN32 ? "fake-node.exe" : "fake-node");
     writeFileSync(fakeNode, "not a program\n");
     const broken = buildAtbashEntry(REAL_HOOK_SCRIPT, process.platform, realpathSync(fakeNode));
     verifyEntryRoundTrip(broken, REAL_HOOK_SCRIPT, realpathSync(fakeNode), process.platform);
@@ -1735,7 +1738,10 @@ test("install-hook: every distinct spelling the host could run must answer the p
     const deny = join(home, "deny.cjs");
     writeFileSync(deny, `process.stdout.write(${JSON.stringify(DENY_JSON)});\n`);
     const answers = scriptEntry(realpathSync(deny));
-    const fakeNode = join(home, "fake-node");
+    // On Windows an extensionless file sent to PowerShell's call operator is handed to the shell,
+    // which opens a "How do you want to open this file?" window for every run; with .exe Windows
+    // refuses it as "not a valid application" instead. Either way it is not a program.
+    const fakeNode = join(home, WIN32 ? "fake-node.exe" : "fake-node");
     writeFileSync(fakeNode, "not a program\n");
     const mixed = {
       ...answers,
