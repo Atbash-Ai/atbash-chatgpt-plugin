@@ -57,8 +57,10 @@ import {
   sameIdentity,
   validateHookScriptPath,
   verifyEntryRoundTrip,
+  decodeStderr,
   writeHooksFileAtomically,
   type AtbashIdentity,
+  type AtbashMatcherGroup,
 } from "../src/install-hook/hooks-file.js";
 
 // dist-tests/tests -> plugins/atbash/runtime: the committed runtime, where the installer ships.
@@ -72,7 +74,12 @@ const NODE_PATH = realpathSync(process.execPath);
 const NODE_COMMAND = WIN32 ? NODE_PATH.replaceAll("\\", "/") : NODE_PATH;
 // PowerShell's call operator on Windows (Codex runs hook commands through PowerShell there).
 const CALL = WIN32 ? "& " : "";
-const OWN_COMMAND = `${CALL}"${NODE_COMMAND}" "${COMMAND_PATH}"`;
+// The command the installer writes. On Windows both keys carry the one backslash spelling the probe
+// actually ran (command === commandWindows), so the summary never names a string that was not probed;
+// COMMAND_PATH / NODE_COMMAND above stay forward-slash for the hand-written entries the tests merge with.
+const OWN_COMMAND = WIN32
+  ? `& "${NODE_PATH}" "${REAL_HOOK_SCRIPT}"`
+  : `"${NODE_COMMAND}" "${COMMAND_PATH}"`;
 // Plain interpreter paths for the pure (platform-parameterised) cases.
 const POSIX_NODE = "/usr/local/bin/node";
 const WIN32_NODE = "C:\\Program Files\\nodejs\\node.exe";
@@ -185,7 +192,8 @@ test("install-hook: the entry names the plugin's real absolute hook path, forwar
     ],
   });
 
-  // Windows: forward slashes in `command`, the backslash spelling in `commandWindows`.
+  // Windows: the one backslash spelling in both `command` and `commandWindows` (a host that runs
+  // `command` must get a spelling PowerShell answers; security review 2026-10-20).
   const windows = buildAtbashEntry(
     "C:\\Users\\dev\\New folder (3)\\runtime\\pre-tool-use.cjs",
     "win32",
@@ -194,7 +202,7 @@ test("install-hook: the entry names the plugin's real absolute hook path, forwar
   assert.deepEqual(windows.hooks[0], {
     type: "command",
     command:
-      '& "C:/Program Files/nodejs/node.exe" "C:/Users/dev/New folder (3)/runtime/pre-tool-use.cjs"',
+      '& "C:\\Program Files\\nodejs\\node.exe" "C:\\Users\\dev\\New folder (3)\\runtime\\pre-tool-use.cjs"',
     commandWindows:
       '& "C:\\Program Files\\nodejs\\node.exe" "C:\\Users\\dev\\New folder (3)\\runtime\\pre-tool-use.cjs"',
     timeout: HOOK_TIMEOUT_SECONDS,
@@ -334,7 +342,7 @@ test("install-hook: a hook path containing shell metacharacters or a backslash o
   );
   assert.equal(
     buildAtbashEntry("C:\\x\\runtime\\pre-tool-use.cjs", "win32", WIN32_NODE).hooks[0]?.command,
-    '& "C:/Program Files/nodejs/node.exe" "C:/x/runtime/pre-tool-use.cjs"',
+    String.raw`& "C:\Program Files\nodejs\node.exe" "C:\x\runtime\pre-tool-use.cjs"`,
   );
 
   // Real plugin directories whose names a shell would interpret: the installer that lives there
@@ -1005,7 +1013,10 @@ test("install-hook: the registered command string is executable by the host shel
   const home = tempHome();
   try {
     // An interpreter that exists, is absolute and passes the allowlist, but is not a program.
-    const fakeNode = join(home, "fake-node");
+    // On Windows an extensionless file sent to PowerShell's call operator is handed to the shell,
+    // which opens a "How do you want to open this file?" window for every run; with .exe Windows
+    // refuses it as "not a valid application" instead. Either way it is not a program.
+    const fakeNode = join(home, WIN32 ? "fake-node.exe" : "fake-node");
     writeFileSync(fakeNode, "not a program\n");
     const broken = buildAtbashEntry(REAL_HOOK_SCRIPT, process.platform, realpathSync(fakeNode));
     verifyEntryRoundTrip(broken, REAL_HOOK_SCRIPT, realpathSync(fakeNode), process.platform);
@@ -1386,7 +1397,8 @@ test("install-hook: the built installer (dist and the committed runtime) registe
     const home = tempHome();
     try {
       const sibling = realpathSync(join(resolve(entry, ".."), "pre-tool-use.cjs"));
-      const registered = WIN32 ? sibling.replaceAll("\\", "/") : sibling;
+      // The installer writes the realpath as it is: backslashes on Windows, in both keys.
+      const registered = sibling;
       const run = (args: string[]) =>
         spawnSync(process.execPath, [entry, ...args], {
           cwd: process.cwd(),
@@ -1404,7 +1416,7 @@ test("install-hook: the built installer (dist and the committed runtime) registe
       assert.equal(install.status, EXIT_OK, install.stderr);
       assert.match(install.stdout, /Installed the Atbash hook/, install.stdout);
       assert.match(install.stdout, /run \/hooks and trust/, install.stdout);
-      const expectedCommand = `${CALL}"${NODE_COMMAND}" "${registered}"`;
+      const expectedCommand = `${CALL}"${NODE_PATH}" "${registered}"`;
       assert.ok(install.stdout.includes(`hook command: ${expectedCommand}`), install.stdout);
       assert.ok(install.stdout.includes(`interpreter:  ${NODE_PATH}`), install.stdout);
       const hooksPath = join(home, "hooks.json");
@@ -1684,4 +1696,198 @@ test("install-hook: a project hooks.json that links outside the project is refus
   } finally {
     rmSync(home, { force: true, recursive: true });
   }
+});
+
+// Security review 2026-10-20 of the #13 re-cut: the probe's own guarantees, each pinned.
+
+/** A probe entry whose command (every spelling) runs `script` with the real interpreter. */
+function scriptEntry(script: string): AtbashMatcherGroup {
+  const entry = buildAtbashEntry(REAL_HOOK_SCRIPT, process.platform, NODE_PATH);
+  const command = WIN32 ? `& "${NODE_PATH}" "${script}"` : `"${NODE_PATH}" "${script}"`;
+  return {
+    ...entry,
+    hooks: [{ ...entry.hooks[0]!, command, ...(WIN32 ? { commandWindows: command } : {}) }],
+  };
+}
+
+const DENY_JSON = JSON.stringify({
+  hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "deny" },
+});
+
+test("install-hook: on win32 both registered spellings are the one backslash spelling PowerShell answers", () => {
+  // A host that ran `command` instead of the documented `commandWindows` must still get a
+  // spelling PowerShell answers: the forward-slash spelling can hang there.
+  const hook = buildAtbashEntry(
+    String.raw`C:\Users\dev\New folder (3)\runtime\pre-tool-use.cjs`,
+    "win32",
+    WIN32_NODE,
+  ).hooks[0]!;
+  assert.equal(hook.command, hook.commandWindows);
+  assert.equal(
+    hook.command,
+    String.raw`& "C:\Program Files\nodejs\node.exe" "C:\Users\dev\New folder (3)\runtime\pre-tool-use.cjs"`,
+  );
+});
+
+test("install-hook: every distinct spelling the host could run must answer the probe", () => {
+  // A hand-edited entry whose `command` cannot run, beside a `commandWindows` that answers: on
+  // win32 a host that runs `command` would wait out its timeout and proceed, so the entry is
+  // refused; on POSIX `command` is the one spelling, and it is refused too.
+  const home = tempHome();
+  try {
+    // `commandWindows` runs a script that denies at once, so only `command` can fail the probe.
+    const deny = join(home, "deny.cjs");
+    writeFileSync(deny, `process.stdout.write(${JSON.stringify(DENY_JSON)});\n`);
+    const answers = scriptEntry(realpathSync(deny));
+    // On Windows an extensionless file sent to PowerShell's call operator is handed to the shell,
+    // which opens a "How do you want to open this file?" window for every run; with .exe Windows
+    // refuses it as "not a valid application" instead. Either way it is not a program.
+    const fakeNode = join(home, WIN32 ? "fake-node.exe" : "fake-node");
+    writeFileSync(fakeNode, "not a program\n");
+    const mixed = {
+      ...answers,
+      hooks: [
+        {
+          ...answers.hooks[0]!,
+          command: `${CALL}"${realpathSync(fakeNode)}" "${realpathSync(deny)}"`,
+        },
+      ],
+    };
+    probeRegisteredCommand(answers, process.platform);
+    assert.throws(
+      () => probeRegisteredCommand(mixed, process.platform),
+      /could not be executed by the host shell: (exit \d+|stdout is not one JSON object)/,
+    );
+  } finally {
+    rmSync(home, { force: true, recursive: true });
+  }
+});
+
+test("install-hook: a deny the host could not read as UTF-8 is refused", () => {
+  // The host parses stdout as UTF-8; a UTF-16 deny is output it cannot use, a hook that never
+  // answers.
+  const home = tempHome();
+  try {
+    const script = join(home, "utf16-deny.cjs");
+    writeFileSync(
+      script,
+      `process.stdout.write(Buffer.from(${JSON.stringify(DENY_JSON)}, "utf16le"));\n`,
+    );
+    assert.throws(
+      () => probeRegisteredCommand(scriptEntry(realpathSync(script)), process.platform),
+      /could not be executed by the host shell: stdout is not UTF-8/,
+    );
+    // The same deny in UTF-8 passes: the refusal is about the encoding, not the decision.
+    const utf8 = join(home, "utf8-deny.cjs");
+    writeFileSync(utf8, `process.stdout.write(${JSON.stringify(DENY_JSON)});\n`);
+    probeRegisteredCommand(scriptEntry(realpathSync(utf8)), process.platform);
+  } finally {
+    rmSync(home, { force: true, recursive: true });
+  }
+});
+
+test("install-hook: a deny carrying an invalid UTF-8 byte is refused", () => {
+  // Governor review 2026-10-20: "strictly UTF-8" must mean it. A lenient decode turns the bad byte
+  // into U+FFFD and parses a deny a strict host reader would reject.
+  const home = tempHome();
+  try {
+    const script = join(home, "bad-byte-deny.cjs");
+    const deny = JSON.stringify({
+      hookSpecificOutput: {
+        hookEventName: "PreToolUse",
+        permissionDecision: "deny",
+        permissionDecisionReason: "x_y",
+      },
+    });
+    const [head, tail] = deny.split("_");
+    writeFileSync(
+      script,
+      `process.stdout.write(Buffer.concat([Buffer.from(${JSON.stringify(head)}), Buffer.from([0xff]), Buffer.from(${JSON.stringify(tail)})]));\n`,
+    );
+    assert.throws(
+      () => probeRegisteredCommand(scriptEntry(realpathSync(script)), process.platform),
+      /could not be executed by the host shell: stdout is not UTF-8/,
+    );
+  } finally {
+    rmSync(home, { force: true, recursive: true });
+  }
+});
+
+test("install-hook: the probe never sees the operator's home, config or working directory", () => {
+  // The probe's hook runs in a fresh, private folder that is both its home and its working
+  // directory, holds no Atbash config, and has no Atbash key or config variable. (Not "empty":
+  // Windows PowerShell creates AppData in the home it is given.) The script answers deny only when
+  // all of that holds, so a probe that leaked the operator's environment is refused. The
+  // operator's home here holds a real-shaped config with an agent key.
+  const operator = tempHome();
+  const saved = {
+    HOME: process.env.HOME,
+    USERPROFILE: process.env.USERPROFILE,
+    ATBASH_AGENT_KEY: process.env.ATBASH_AGENT_KEY,
+  };
+  try {
+    mkdirSync(join(operator, ".config", "atbash"), { recursive: true });
+    writeFileSync(
+      join(operator, ".config", "atbash", "config.json"),
+      '{"agentKey":"not-a-real-key"}\n',
+    );
+    process.env.HOME = operator;
+    process.env.USERPROFILE = operator;
+    process.env.ATBASH_AGENT_KEY = "not-a-real-key";
+    const script = join(operator, "isolation.cjs");
+    writeFileSync(
+      script,
+      [
+        'const fs = require("node:fs"), os = require("node:os"), path = require("node:path");',
+        "const real = (p) => { try { return fs.realpathSync.native(p).toLowerCase(); } catch { return null; } };",
+        "const home = os.homedir();",
+        'const noConfig = !fs.existsSync(path.join(home, ".config", "atbash"));',
+        `const operator = ${JSON.stringify(realpathSync.native(operator).toLowerCase())};`,
+        "const isolated = noConfig && real(home) !== operator && real(process.cwd()) === real(home) &&",
+        "  !Object.keys(process.env).some((k) => /^ATBASH_(AGENT_KEY|CONFIG_DIR)$/i.test(k));",
+        `process.stdout.write(isolated ? ${JSON.stringify(DENY_JSON)} : JSON.stringify({ hookSpecificOutput: { permissionDecision: "allow" } }));`,
+        "",
+      ].join("\n"),
+    );
+    probeRegisteredCommand(scriptEntry(realpathSync(script)), process.platform);
+  } finally {
+    for (const [name, value] of Object.entries(saved)) {
+      if (value === undefined) delete process.env[name];
+      else process.env[name] = value;
+    }
+    rmSync(operator, { force: true, recursive: true });
+  }
+});
+
+test("install-hook: the probe's scratch folder is removed after a pass and after a refusal", () => {
+  const scratch = () =>
+    readdirSync(tmpdir())
+      .filter((name) => name.startsWith("atbash-probe-home-"))
+      .sort();
+  const before = scratch();
+  const home = tempHome();
+  try {
+    const deny = join(home, "deny.cjs");
+    writeFileSync(deny, `process.stdout.write(${JSON.stringify(DENY_JSON)});\n`);
+    probeRegisteredCommand(scriptEntry(realpathSync(deny)), process.platform);
+    const silent = join(home, "silent.cjs");
+    writeFileSync(silent, "\n");
+    assert.throws(() =>
+      probeRegisteredCommand(scriptEntry(realpathSync(silent)), process.platform),
+    );
+    assert.deepEqual(scratch(), before, "no atbash-probe-home-* folder left behind");
+  } finally {
+    rmSync(home, { force: true, recursive: true });
+  }
+});
+
+test("install-hook: the probe's stderr is read as UTF-16 only when it carries NUL bytes", () => {
+  // Windows PowerShell 5.1 writes its startup errors as UTF-16LE; read as UTF-8 they come out as
+  // NUL-separated garbage in the refusal message. Real UTF-8 output (node, /bin/sh) has no NUL.
+  const powershell = Buffer.from("The type initializer threw an exception.", "utf16le");
+  assert.equal(decodeStderr(powershell), "The type initializer threw an exception.");
+  assert.ok(!decodeStderr(powershell).includes(String.fromCharCode(0)), "no NUL characters");
+  assert.equal(decodeStderr(Buffer.from("héllo from node ✓", "utf8")), "héllo from node ✓");
+  assert.equal(decodeStderr(Buffer.alloc(0)), "");
+  assert.equal(decodeStderr(null), "");
 });

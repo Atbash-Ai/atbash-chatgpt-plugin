@@ -142,27 +142,32 @@ test("the user-level installer writes the entry hooks.json declares, with the pl
   );
   const withoutInterpreter = (command: unknown) =>
     String(command).replace(/^(?:&\s+)?(?:node|"[^"]+")\s+/, "");
-  assert.equal(
-    withoutInterpreter(installedHook.command),
-    withoutInterpreter(declaredHook.command).replace("$PLUGIN_ROOT", "C:/plugins/atbash"),
+  // On Windows the installer writes the declared Windows spelling into both keys: a host that
+  // runs `command` must get a spelling PowerShell answers (security review 2026-10-20).
+  const declaredWindows = withoutInterpreter(declaredHook.commandWindows).replace(
+    "$env:PLUGIN_ROOT",
+    "C:\\plugins\\atbash",
   );
+  assert.equal(withoutInterpreter(installedHook.commandWindows), declaredWindows);
+  assert.equal(installedHook.command, installedHook.commandWindows);
+  // On POSIX the installed command is the declared one with the placeholder resolved.
   assert.equal(
-    withoutInterpreter(installedHook.commandWindows),
-    withoutInterpreter(declaredHook.commandWindows).replace(
-      "$env:PLUGIN_ROOT",
-      "C:\\plugins\\atbash",
+    withoutInterpreter(
+      buildAtbashEntry("/plugins/atbash/runtime/pre-tool-use.cjs", "linux", "/usr/bin/node")
+        .hooks[0]?.command,
     ),
+    withoutInterpreter(declaredHook.command).replace("$PLUGIN_ROOT", "/plugins/atbash"),
   );
   assert.deepEqual(Object.keys(installedHook).sort(), Object.keys(declaredHook).sort());
 
   assert.equal(parseHookCommand(declaredHook.command)?.interpreter, undefined, "bare node");
   const interpreter = parseHookCommand(installedHook.command)?.interpreter;
   assert.ok(interpreter, "the installer names an interpreter");
-  assert.equal(isAbsolute(interpreter), true);
-  assert.equal(existsSync(interpreter), true);
-  assert.equal(interpreter, process.execPath.replaceAll("\\", "/"));
-  assert.equal(
-    parseHookCommand(installedHook.commandWindows)?.interpreter,
-    process.execPath.replaceAll("/", "\\"),
-  );
+  // Both keys carry the Windows spelling of this very node; read back with forward slashes it is
+  // an absolute path that exists on whichever platform runs the test.
+  assert.equal(interpreter, process.execPath.replaceAll("/", "\\"));
+  assert.equal(parseHookCommand(installedHook.commandWindows)?.interpreter, interpreter);
+  const portable = interpreter.replaceAll("\\", "/");
+  assert.equal(isAbsolute(portable), true);
+  assert.equal(existsSync(portable), true);
 });
