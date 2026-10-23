@@ -86,6 +86,82 @@ export function assertRegularFile(path, lstat = lstatSync) {
   return path;
 }
 
+// The two checks above compare path strings and look only at the last component, so a package that
+// holds a linked folder (package/bin -> somewhere else) and reports bin/x.node passes both. The
+// file's real location, every link resolved, must still be inside the package's real folder.
+// A link Windows tar writes for a folder cannot be resolved (EPERM) although copyFile follows it,
+// so a location that cannot be resolved is refused too, with the same message.
+export function assertInsidePackage(extractDir, target) {
+  let packageRoot;
+  let real;
+  try {
+    packageRoot = realpathSync(resolve(extractDir, "package"));
+    real = realpathSync(target);
+  } catch (error) {
+    throw new Error(
+      `Refusing native file ${JSON.stringify(target)}: it leaves the package (its real location cannot be resolved: ${error.code ?? error.message}).`,
+      { cause: error },
+    );
+  }
+  if (!real.startsWith(packageRoot + sep)) {
+    throw new Error(`Refusing native file ${JSON.stringify(target)}: it leaves the package.`);
+  }
+  return target;
+}
+
+// A packed native package must be the one the lockfile pins: same version, same integrity. npm pack
+// fetches by name and version, so a republished or substituted tarball would otherwise be committed.
+// The entry is looked up the way Node resolves the native package from the SDK being built: find
+// the lockfile entry of that SDK at this version (wherever npm put it: the root, a workspace's own
+// node_modules, or an alias), then try <dir>/node_modules/<native> from the SDK's folder upward.
+// The first entry that exists is the one checked; it must still match exactly.
+function resolutionCandidates(fromDir, packageName) {
+  const parts = fromDir.split("/");
+  const candidates = [];
+  for (let i = parts.length; i >= 0; i -= 1) {
+    if (i > 0 && parts[i - 1] === "node_modules") continue;
+    const base = parts.slice(0, i).join("/");
+    candidates.push(base ? `${base}/node_modules/${packageName}` : `node_modules/${packageName}`);
+  }
+  return candidates;
+}
+
+function lockedNativeEntry(lock, packageName, version, sdkPackage) {
+  if (sdkPackage === undefined) return lock.packages[`node_modules/${packageName}`];
+  const suffix = `node_modules/${sdkPackage}`;
+  const sdkDirs = Object.keys(lock.packages)
+    .filter(
+      (key) =>
+        (key === suffix || key.endsWith(`/${suffix}`)) && lock.packages[key]?.version === version,
+    )
+    .sort();
+  for (const sdkDir of sdkDirs) {
+    for (const candidate of resolutionCandidates(sdkDir, packageName)) {
+      const entry = lock.packages[candidate];
+      if (entry !== undefined && entry !== null) return entry;
+    }
+  }
+  return undefined;
+}
+
+export function assertLockedIntegrity(lock, packageName, version, integrity, sdkPackage) {
+  if (lock === null || typeof lock !== "object" || typeof lock.packages !== "object") {
+    throw new Error("The lockfile has no packages section to check native packages against.");
+  }
+  const entry = lockedNativeEntry(lock, packageName, version, sdkPackage);
+  if (entry === undefined || entry === null) {
+    throw new Error(`${packageName} is not in the lockfile.`);
+  }
+  if (typeof integrity !== "string" || integrity.length === 0) {
+    throw new Error(`npm pack reported no integrity for ${packageName}@${version}.`);
+  }
+  if (entry.version !== version || entry.integrity !== integrity) {
+    throw new Error(
+      `${packageName}@${version} (${integrity}) does not match the lockfile (${entry.version}, ${entry.integrity}).`,
+    );
+  }
+}
+
 // Run the build only when this file is the script node was started with. Both sides are resolved
 // through realpath so a drive-letter case or a symlinked checkout cannot turn the build into a
 // silent no-op (which would leave CI's runtime diff comparing a stale tree and passing).
@@ -102,6 +178,8 @@ export async function buildMarketplace() {
   const environment = selectBuildEnvironment();
   const { packageJsonPath: sdkPackagePath, version: sdkVersion } =
     resolveEnvironmentSdk(environment);
+  const lockPath = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "package-lock.json");
+  const lock = JSON.parse(await readFile(lockPath, "utf8"));
   const npmCli = resolveNpmCli();
   const tar = resolveTar();
   const tempDir = await mkdtemp(join(tmpdir(), "atbash-marketplace-"));
@@ -133,6 +211,13 @@ export async function buildMarketplace() {
       if (metadata?.filename === undefined || nativeFile?.path === undefined) {
         throw new Error(`${packageName}@${sdkVersion} did not contain a native .node file.`);
       }
+      assertLockedIntegrity(
+        lock,
+        packageName,
+        sdkVersion,
+        metadata.integrity,
+        environment.sdkPackage,
+      );
 
       const archive = join(tempDir, metadata.filename);
       const extractDir = join(tempDir, platform);
@@ -142,7 +227,10 @@ export async function buildMarketplace() {
       const destinationDir = join(stagingDir, "native", platform);
       const destination = join(destinationDir, "atbash.node");
       await mkdir(destinationDir, { recursive: true });
-      const nativeSource = assertRegularFile(containedNativePath(extractDir, nativeFile.path));
+      const nativeSource = assertInsidePackage(
+        extractDir,
+        assertRegularFile(containedNativePath(extractDir, nativeFile.path)),
+      );
       await copyFile(nativeSource, destination);
       // Modes are part of what CI diffs against the committed runtime; the tarball's mode is not ours.
       await chmod(destination, 0o644);
