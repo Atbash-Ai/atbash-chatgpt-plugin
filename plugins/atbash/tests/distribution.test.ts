@@ -1,12 +1,12 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, mkdtempSync, readdirSync, readFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readdirSync, readFileSync, realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import test from "node:test";
 
-import { NOT_SET_UP_REASON } from "../src/hook/bootstrap.js";
+import { notSetUpReason } from "../src/hook/bootstrap.js";
 import type { PreToolUseInput } from "../src/hook/protocol.js";
 import { makeHookInput } from "./fixtures.js";
 
@@ -36,7 +36,8 @@ const notSetUp = {
   hookSpecificOutput: {
     hookEventName: "PreToolUse",
     permissionDecision: "deny",
-    permissionDecisionReason: NOT_SET_UP_REASON,
+    // The built hook derives the plugin root from its own path: this checkout.
+    permissionDecisionReason: notSetUpReason(realpathSync(".")),
   },
 };
 
@@ -104,6 +105,28 @@ test("built runtime lets setup run before any configuration exists", () => {
   assert.equal(allowed.status, 0, allowed.stderr);
   assert.equal(allowed.stdout, "");
   assert.deepEqual(JSON.parse(chained.stdout), notSetUp);
+});
+
+// Codex on macOS reads the skill with sed (captured from Codex 0.163). A denied read
+// left it nothing to try, so the denial now names a read that is allowed — and that
+// read must itself pass, or the hint is one more dead end.
+test("built runtime lets the setup skill be read, and its denial names a read that works", () => {
+  const skill = resolve("skills/atbash-setup/SKILL.md");
+  const command = (value: string) =>
+    makeHookInput({ tool_name: "Bash", tool_input: { command: value } });
+
+  const sed = runHook("runtime/pre-tool-use.cjs", command(`sed -n '1,240p' ${skill}`));
+  assert.equal(sed.status, 0, sed.stderr);
+  assert.equal(sed.stdout, "");
+
+  const denied = runHook("runtime/pre-tool-use.cjs", command("ls"));
+  const reason = (JSON.parse(denied.stdout) as typeof notSetUp).hookSpecificOutput
+    .permissionDecisionReason;
+  const hint = /run: (cat '[^']+')$/.exec(reason)?.[1];
+  assert.ok(hint, reason);
+  const followed = runHook("runtime/pre-tool-use.cjs", command(hint));
+  assert.equal(followed.status, 0, followed.stderr);
+  assert.equal(followed.stdout, "");
 });
 
 test("marketplace runtime includes every supported native target", () => {

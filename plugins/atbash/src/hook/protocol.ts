@@ -101,10 +101,13 @@ export function parsePreToolUseInput(rawInput: string): PreToolUseInput {
   };
 }
 
+/** The longest reason the hook passes to the host; anything longer is cut. */
+export const MAX_REASON_LENGTH = 800;
+
 export function sanitizeReason(reason: string, fallback: string): string {
   const normalized = reason.replaceAll(/\s+/g, " ").trim();
   const safeReason = normalized.length === 0 ? fallback : normalized;
-  return safeReason.slice(0, 800);
+  return safeReason.slice(0, MAX_REASON_LENGTH);
 }
 
 /**
