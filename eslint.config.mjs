@@ -21,12 +21,15 @@ export default tseslint.config(
     },
   },
   {
-    // The shipped hook entry point is plain CommonJS on purpose: it must load with no bundler and
-    // no dependencies so it can still deny when the bundled hook next to it cannot load.
-    files: ["plugins/atbash/src/hook/shim.cjs"],
+    // The shipped hook entry point (the supervisor) and the shim it runs are plain CommonJS on
+    // purpose: they must load with no bundler and no dependencies so they can still deny when the
+    // bundled hook next to them cannot load.
+    files: ["plugins/atbash/src/hook/shim.cjs", "plugins/atbash/src/hook/supervisor.cjs"],
     languageOptions: {
       globals: {
         Buffer: "readonly",
+        __dirname: "readonly",
+        clearTimeout: "readonly",
         process: "readonly",
         require: "readonly",
         setTimeout: "readonly",

@@ -60,8 +60,8 @@ export async function bundleAtbash(outdir, { minify = false, sourcemap = true, e
     bundle: true,
     entryPoints: {
       index: "src/index.ts",
-      // The host runs pre-tool-use.cjs, which is the un-bundled shim (src/hook/shim.cjs, copied
-      // below); the bundled hook it loads is pre-tool-use-main.cjs.
+      // The host runs pre-tool-use.cjs, the un-bundled supervisor (src/hook/supervisor.cjs, copied
+      // below), which runs the shim (src/hook/shim.cjs) in a child; the shim loads this bundle.
       "pre-tool-use-main": "src/pre-tool-use.ts",
       status: "src/status.ts",
       // The user-level hooks.json installer: Codex 0.154+ does not load a plugin's own hooks.
@@ -108,15 +108,19 @@ export async function bundleAtbash(outdir, { minify = false, sourcemap = true, e
     await writeFile(outputPath, source.replaceAll("\t", "  "), "utf8");
   }
 
-  // The shim is shipped verbatim, never bundled or minified: it has to load when the bundle cannot.
-  await copyFile("src/hook/shim.cjs", join(outdir, "pre-tool-use.cjs"));
+  // The supervisor and the shim are shipped verbatim, never bundled or minified: they have to load
+  // when the bundle cannot. The host runs the supervisor (pre-tool-use.cjs); it runs the shim
+  // (pre-tool-use-shim.cjs) in a child process, and the shim loads the bundle.
+  await copyFile("src/hook/supervisor.cjs", join(outdir, "pre-tool-use.cjs"));
+  await copyFile("src/hook/shim.cjs", join(outdir, "pre-tool-use-shim.cjs"));
 
   // File modes are part of what CI diffs against the committed runtime; set them explicitly so a
   // build reproduces byte-for-byte and mode-for-mode on every platform and umask: the hashbang
-  // bundles are executable (as esbuild marks them), the shim and the library are not.
+  // bundles are executable (as esbuild marks them), the supervisor, the shim and the library are not.
   for (const [entry, mode] of [
     ["index", 0o644],
     ["pre-tool-use", 0o644],
+    ["pre-tool-use-shim", 0o644],
     ["pre-tool-use-main", 0o755],
     ["status", 0o755],
     ["install-hook", 0o755],

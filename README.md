@@ -91,6 +91,19 @@ The commands above assume you are in the repository checkout. From an installed 
 
 The guard allows only an SDK `ALLOW` decision with `allow: true`. `HOLD`, `BLOCK`, invalid configuration, and service errors deny the pending call. Enforcement covers tool calls exposed to the host's `PreToolUse` hook.
 
+The hook also has to answer before the host gives up on it, because Codex and Claude Code let a tool call run when a hook times out (35 s) or exits without a decision. The host starts `runtime/pre-tool-use.cjs`, a small supervisor that loads only Node built-ins. The supervisor runs the real hook (`runtime/pre-tool-use-shim.cjs`, which loads the SDK and its native addon) in a child process and keeps its own clock:
+
+| What happens to the hook                                                                                           | What the host gets                                                                                                                               |
+| ------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------ |
+| The judge answers `ALLOW`                                                                                          | Nothing on stdout: the call runs                                                                                                                 |
+| The judge answers anything else, or cannot be reached (no network, chain down)                                     | A deny                                                                                                                                           |
+| The judge is slow, or the hook process freezes (for example, an antivirus scanner holding the native addon's load) | A deny at `ATBASH_HOOK_DEADLINE_MS` (default 28 s) or, if the hook is frozen, 1.5 s later from the supervisor, which then kills the hook process |
+| The hook crashes, exits without a decision, or prints anything other than one deny                                 | A deny                                                                                                                                           |
+
+A silent exit counts as a permit only when the hook also signals it on a private channel from its normal exit path, so a hook process that is cut off without running its exit handlers is denied. The hook's log lines reach the host's stderr through the supervisor, capped at 2 KiB, so a hook process that cannot be torn down at once does not keep the host waiting. Both that cap and the deny's own size bound assume the host gives the hook a pipe of at least 4 KiB, as every known host does.
+
+Two gaps remain, and a hook on the agent's own machine cannot close them: Node itself not starting the supervisor before the host's timeout, and a scanner holding the supervisor while it starts the hook process. In both cases the host decides alone.
+
 Register the hook with the installer above. The plugin's bundled `hooks/hooks.json` entry runs a bare `node` and a `$PLUGIN_ROOT` placeholder: it depends on `node` being on the host's PATH and on `PLUGIN_ROOT` being exported by the host, so it is not a gate on its own.
 
 ## Build from source
