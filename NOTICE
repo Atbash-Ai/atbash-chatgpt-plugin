@@ -1,0 +1,17 @@
+atbash-chatgpt-plugin
+Copyright 2026 Atbash Technologies Ltd.
+
+This product is licensed under the Apache License, Version 2.0 (see LICENSE).
+Versions published before this change remain available under the license
+they were released with.
+
+Third-party components
+----------------------
+The Apache License covers this repository's own source. It does not cover the
+third-party software bundled into plugins/atbash/runtime/, which keeps its own
+license:
+
+- The Atbash SDK, compiled into runtime/*.cjs and shipped as the native
+  binaries in runtime/native/: see runtime/licenses/atbash-sdk.LICENSE.
+- Other open-source dependencies bundled into runtime/*.cjs: see their
+  licenses in their packages on npm.
