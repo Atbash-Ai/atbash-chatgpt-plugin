@@ -147,15 +147,29 @@ for (const [label, setup, expected] of [
   );
 
   test(
-    "real SDK: no key anywhere fails closed with the generic configuration denial",
+    "real SDK: no key anywhere is setup mode, which denies a non-setup call",
     withIdentity({}, async () => {
       assert.throws(() => createAtbashGuard());
       assert.throws(() => createStatusClient());
-      assert.deepEqual(await evaluatePreToolUse(makeHookInput()), {
-        allow: false,
-        verdict: "ERROR",
-        reason: "Atbash ERROR: configuration is missing or invalid.",
-      });
+      const outcome = await evaluatePreToolUse(makeHookInput());
+      assert.equal(outcome.allow, false);
+      assert.equal(outcome.allow === false && outcome.verdict, "ERROR");
+      assert.match(outcome.allow === false ? outcome.reason : "", /^Atbash is not set up yet\./);
+    }),
+  );
+
+  test(
+    "real SDK: a config.json key the SDK cannot use fails closed with the configuration denial",
+    withIdentity({ configKey: "zz" }, async () => {
+      assert.throws(() => createAtbashGuard());
+      assert.throws(() => createStatusClient());
+      const outcome = await evaluatePreToolUse(makeHookInput());
+      assert.equal(outcome.allow, false);
+      assert.equal(outcome.allow === false && outcome.verdict, "ERROR");
+      assert.match(
+        outcome.allow === false ? outcome.reason : "",
+        /^Atbash ERROR: configuration is missing or invalid\./,
+      );
     }),
   );
 }

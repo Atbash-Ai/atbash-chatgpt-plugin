@@ -156,7 +156,7 @@ npm install --save-exact --save-dev @atbash/sdk-dev@npm:@atbash/sdk@<dev-version
 
 Then rebuild the runtime for the branch you are on and commit it. Keep the development SDK on the same version the Atbash dashboard's `development` branch uses. The development service endpoint and chain node pools live in `plugins/atbash/build-environments.json`.
 
-Current pins: production `@atbash/sdk` 0.10.0, development `@atbash/sdk-dev` → `@atbash/sdk` 0.19.1-dev.0 (the dashboard `development` pin). Before changing a pin, check:
+Current pins: production `@atbash/sdk` 0.10.0, development `@atbash/sdk-dev` → `@atbash/sdk` 0.19.1-dev.0. The dashboard's `development` branch moved to 0.21.0-dev.0 (private chain only) on 2026-10-23; 0.19.1-dev.0 still knows the retired public development chain, so moving this pin is the next change, in its own pull request (0.21.0-dev.0 drops the public-chain exports this build overrides). Before changing a pin, check:
 
 - that the new version still exports the same production defaults (service endpoint, chain RIDs, node URLs), since production ships the SDK's defaults without overrides;
 - that `resolve("agentKey")` still reads `config.json`, which the key order above depends on (`tests/identity-bridge.test.ts` covers it);

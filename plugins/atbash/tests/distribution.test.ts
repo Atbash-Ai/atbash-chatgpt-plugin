@@ -324,6 +324,59 @@ test("bundled SDK trusts its environment's judge while rejecting other hosts and
   }
 });
 
+test("bundled guard refuses an unchecked audit-tier judge answer (C-CHATGPT-05)", () => {
+  // Codex runs the committed runtime, not src: a rebuild that lost requireEnforcement would let an
+  // audit-tier `{"status":"logged"}` answer (recorded, never judged) through.
+  for (const directory of ["dist", "runtime"] as const) {
+    const { endpoint } = expectedTarget(directory);
+    const result = spawnSync(
+      process.execPath,
+      [
+        "-e",
+        `
+        const assert = require('node:assert/strict');
+        const { createAtbashGuard } = require('./${directory}/index.cjs');
+        const judged = [];
+        global.fetch = async (input, init) => {
+          const url = new URL(typeof input === 'string' || input instanceof URL ? input : input.url);
+          if (url.pathname === '/api/v1/judge') judged.push(url.origin);
+          return new Response(JSON.stringify({ status: 'logged' }), {
+            status: 200,
+            headers: { 'content-type': 'application/json' },
+          });
+        };
+        (async () => {
+          const guard = createAtbashGuard();
+          // Only the chain write is stubbed; signing, the judge call and the decision are the bundle's own.
+          guard.logToolCall = async () => ({ success: true, toolCallId: 'runtime-enforcement-test', signedHex: '00' });
+          const decision = await guard.auditToolCall({ toolName: 'Bash', args: { command: 'ls' }, context: 'source=codex' });
+          assert.equal(decision.allow, false, JSON.stringify(decision));
+          assert.match(decision.reason ?? '', /logged this action but did not check it/);
+          assert.deepEqual(judged, [new URL(${JSON.stringify(endpoint)}).origin]);
+        })().catch((error) => { console.error(error); process.exitCode = 1; });
+        `,
+      ],
+      {
+        cwd: process.cwd(),
+        encoding: "utf8",
+        timeout: 20_000,
+        env: {
+          ...process.env,
+          ATBASH_CONFIG_DIR: `${process.cwd()}/dist-tests/unused-enforcement-test-home`,
+          ATBASH_AGENT_KEY: "01".repeat(32),
+          ATBASH_ORG_NAME: "",
+          ATBASH_ENDPOINT: "",
+          ATBASH_JUDGE_VERIFY_PUBKEY: "",
+          ATBASH_DEFAULT_CHAIN_NETWORK: "",
+          ATBASH_TELEMETRY_DISABLED: "true",
+          ATBASH_CODEX_TIMEOUT_MS: "30000",
+        },
+      },
+    );
+    assert.equal(result.status, 0, `${directory}: ${result.stderr}`);
+  }
+});
+
 test("bundled SDK uses its environment's BRIDs and node pools for defaults and organization routing", () => {
   for (const directory of ["dist", "runtime"] as const) {
     const { endpoint, chains } = expectedTarget(directory);
