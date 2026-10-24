@@ -1,6 +1,6 @@
 import { Atbash, type AgentPolicy } from "@atbash/sdk";
 
-import { resolveAgentKey, resolveOrgName, resolveTimeoutMs, type FromConfig } from "./guard.js";
+import { resolveGuardConfiguration, resolveTimeoutMs, type FromConfig } from "./guard.js";
 
 export type AtbashStatus =
   | {
@@ -25,15 +25,20 @@ export interface StatusClient {
 
 export type StatusClientFactory = () => StatusClient;
 
+/**
+ * The status client runs as the same configuration the hook's guard does: the
+ * profile setup selected, or the plugin's resolution of the SDK configuration
+ * when none is. Reading only the SDK's configuration reported "configuration is
+ * missing or invalid" right after a successful setup.
+ */
 export function createStatusClient(
   fromConfig: FromConfig = (options) => Atbash.fromConfig(options),
 ): StatusClient {
-  const agentKey = resolveAgentKey();
-  const orgName = resolveOrgName();
+  const configuration = resolveGuardConfiguration("codex");
   return fromConfig({
     failClosed: true,
-    ...(agentKey === undefined ? {} : { agentKey }),
-    ...(orgName === undefined ? {} : { orgName }),
+    ...(configuration.agentKey ? { agentKey: configuration.agentKey } : {}),
+    ...(configuration.orgName ? { orgName: configuration.orgName } : {}),
     timeoutMs: resolveTimeoutMs(),
   });
 }

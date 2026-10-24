@@ -1,11 +1,45 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, readdirSync, readFileSync } from "node:fs";
-import { join } from "node:path";
+import { existsSync, mkdtempSync, readdirSync, readFileSync, realpathSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
 import test from "node:test";
 
+import { notSetUpReason } from "../src/hook/bootstrap.js";
+import type { PreToolUseInput } from "../src/hook/protocol.js";
 import { makeHookInput } from "./fixtures.js";
+
+// Run built hooks against an empty home so the developer's own Atbash setup
+// cannot leak in and decide which branch of the guard these tests exercise.
+function runHook(script: string, input: PreToolUseInput = makeHookInput()) {
+  const home = mkdtempSync(join(tmpdir(), "atbash-dist-"));
+  const env: NodeJS.ProcessEnv = {
+    ...process.env,
+    HOME: home,
+    USERPROFILE: home,
+    ATBASH_CONFIG_DIR: join(home, ".config", "atbash"),
+    ATBASH_CODEX_TIMEOUT_MS: "invalid",
+    ATBASH_HOOK_DEADLINE_MS: "",
+  };
+  delete env.ATBASH_AGENT_KEY;
+  delete env.ATBASH_ORG_NAME;
+  return spawnSync(process.execPath, [script], {
+    cwd: process.cwd(),
+    encoding: "utf8",
+    env,
+    input: JSON.stringify(input),
+  });
+}
+
+const notSetUp = {
+  hookSpecificOutput: {
+    hookEventName: "PreToolUse",
+    permissionDecision: "deny",
+    // The built hook derives the plugin root from its own path: this checkout.
+    permissionDecisionReason: notSetUpReason(realpathSync(".")),
+  },
+};
 
 interface BuildEnvironment {
   sdkPackage: string;
@@ -48,25 +82,51 @@ function expectedTarget(directory: "dist" | "runtime"): {
 test("built hook is self-contained and fails closed", () => {
   assert.equal(existsSync(`dist/native/${process.platform}-${process.arch}/atbash.node`), true);
 
-  const result = spawnSync(process.execPath, ["dist/pre-tool-use.cjs"], {
-    cwd: process.cwd(),
-    encoding: "utf8",
-    env: {
-      ...process.env,
-      ATBASH_CODEX_TIMEOUT_MS: "invalid",
-      ATBASH_HOOK_DEADLINE_MS: "",
-    },
-    input: JSON.stringify(makeHookInput()),
-  });
+  const result = runHook("dist/pre-tool-use.cjs");
 
   assert.equal(result.status, 0, result.stderr);
-  assert.deepEqual(JSON.parse(result.stdout), {
-    hookSpecificOutput: {
-      hookEventName: "PreToolUse",
-      permissionDecision: "deny",
-      permissionDecisionReason: "Atbash ERROR: configuration is missing or invalid.",
-    },
-  });
+  assert.deepEqual(JSON.parse(result.stdout), notSetUp);
+});
+
+test("built runtime lets setup run before any configuration exists", () => {
+  const launcher = resolve("skills/atbash-setup/scripts/atbash-control.mjs");
+  const command = (value: string) =>
+    makeHookInput({ tool_name: "Bash", tool_input: { command: value } });
+
+  const allowed = runHook(
+    "runtime/pre-tool-use.cjs",
+    command(`node "${launcher}" setup start --host codex`),
+  );
+  const chained = runHook(
+    "runtime/pre-tool-use.cjs",
+    command(`node "${launcher}" setup start --host codex && cat ~/.ssh/id_rsa`),
+  );
+
+  assert.equal(allowed.status, 0, allowed.stderr);
+  assert.equal(allowed.stdout, "");
+  assert.deepEqual(JSON.parse(chained.stdout), notSetUp);
+});
+
+// Codex on macOS reads the skill with sed (captured from Codex 0.163). A denied read
+// left it nothing to try, so the denial now names a read that is allowed — and that
+// read must itself pass, or the hint is one more dead end.
+test("built runtime lets the setup skill be read, and its denial names a read that works", () => {
+  const skill = resolve("skills/atbash-setup/SKILL.md");
+  const command = (value: string) =>
+    makeHookInput({ tool_name: "Bash", tool_input: { command: value } });
+
+  const sed = runHook("runtime/pre-tool-use.cjs", command(`sed -n '1,240p' ${skill}`));
+  assert.equal(sed.status, 0, sed.stderr);
+  assert.equal(sed.stdout, "");
+
+  const denied = runHook("runtime/pre-tool-use.cjs", command("ls"));
+  const reason = (JSON.parse(denied.stdout) as typeof notSetUp).hookSpecificOutput
+    .permissionDecisionReason;
+  const hint = /run: (cat '[^']+')$/.exec(reason)?.[1];
+  assert.ok(hint, reason);
+  const followed = runHook("runtime/pre-tool-use.cjs", command(hint));
+  assert.equal(followed.status, 0, followed.stderr);
+  assert.equal(followed.stdout, "");
 });
 
 test("marketplace runtime includes every supported native target", () => {
@@ -95,25 +155,10 @@ test("marketplace runtime includes every supported native target", () => {
     );
   }
 
-  const result = spawnSync(process.execPath, ["runtime/pre-tool-use.cjs"], {
-    cwd: process.cwd(),
-    encoding: "utf8",
-    env: {
-      ...process.env,
-      ATBASH_CODEX_TIMEOUT_MS: "invalid",
-      ATBASH_HOOK_DEADLINE_MS: "",
-    },
-    input: JSON.stringify(makeHookInput()),
-  });
+  const result = runHook("runtime/pre-tool-use.cjs");
 
   assert.equal(result.status, 0, result.stderr);
-  assert.deepEqual(JSON.parse(result.stdout), {
-    hookSpecificOutput: {
-      hookEventName: "PreToolUse",
-      permissionDecision: "deny",
-      permissionDecisionReason: "Atbash ERROR: configuration is missing or invalid.",
-    },
-  });
+  assert.deepEqual(JSON.parse(result.stdout), notSetUp);
 });
 
 test("marketplace runtime ships every entry point with the mode the build sets", () => {
@@ -222,6 +267,9 @@ test("marketplace package includes the setup and management skills", () => {
     readFileSync("skills/atbash-manage/SKILL.md", "utf8"),
     /^---\r?\nname: atbash-manage\r?\n/,
   );
+  // AT-576: the helper can cancel a job, but only an instruction makes the agent use it.
+  assert.match(skill, /`setup cancel <job-id>`/);
+  assert.match(readFileSync("skills/atbash-manage/SKILL.md", "utf8"), /`manage cancel <job-id>`/);
   assert.match(
     readFileSync("skills/atbash-setup/scripts/atbash-control.mjs", "utf8"),
     /runtime\/control\.cjs/,

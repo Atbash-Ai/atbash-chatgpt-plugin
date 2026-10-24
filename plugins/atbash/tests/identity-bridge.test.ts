@@ -87,7 +87,7 @@ test(
   "the guard always requires a checked decision and fails closed",
   withIdentity({}, () => {
     const { calls, fromConfig } = capture();
-    createAtbashGuard(fromConfig);
+    createAtbashGuard("codex", fromConfig);
     assert.equal(calls.length, 1);
     // Read through a widened type: SDK 0.9.2's options type has no requireEnforcement field.
     const options = calls[0] as Record<string, unknown> | undefined;
@@ -108,7 +108,7 @@ for (const [label, setup, expected] of [
     withIdentity(setup, () => {
       const guard = capture();
       const status = capture();
-      createAtbashGuard(guard.fromConfig);
+      createAtbashGuard("codex", guard.fromConfig);
       createStatusClient(status.fromConfig);
       for (const options of [guard.calls[0], status.calls[0]]) {
         assert.equal(options?.agentKey, expected);
