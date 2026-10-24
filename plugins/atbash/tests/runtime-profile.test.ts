@@ -5,12 +5,21 @@ import { join } from "node:path";
 import test from "node:test";
 
 import { generateKeypair } from "@atbash/sdk";
-import { resolveGuardConfiguration } from "../src/atbash/guard.js";
+import {
+  createAtbashGuard,
+  resolveGuardConfiguration,
+  type FromConfig,
+} from "../src/atbash/guard.js";
 import { createStatusClient } from "../src/atbash/status.js";
 import { loadSelectedRuntimeProfile } from "../src/control/runtime-profile.js";
 import { ControlStore } from "../src/control/store.js";
 
-test("selected host profile resolves a matching local credential", async () => {
+type Keypair = ReturnType<typeof generateKeypair>;
+
+/** Runs `body` with a codex profile for org "Acme" selected under a throwaway config root. */
+async function withSelectedProfile(
+  body: (keypair: Keypair) => void | Promise<void>,
+): Promise<void> {
   const root = await mkdtemp(join(tmpdir(), "atbash-runtime-profile-"));
   const keypair = generateKeypair();
   const store = new ControlStore(root);
@@ -42,6 +51,19 @@ test("selected host profile resolves a matching local credential", async () => {
   delete process.env.ATBASH_AGENT_KEY;
   delete process.env.ATBASH_ORG_NAME;
   try {
+    await body(keypair);
+  } finally {
+    if (previousRoot === undefined) delete process.env.ATBASH_CONFIG_DIR;
+    else process.env.ATBASH_CONFIG_DIR = previousRoot;
+    if (previousKey === undefined) delete process.env.ATBASH_AGENT_KEY;
+    else process.env.ATBASH_AGENT_KEY = previousKey;
+    if (previousOrg === undefined) delete process.env.ATBASH_ORG_NAME;
+    else process.env.ATBASH_ORG_NAME = previousOrg;
+  }
+}
+
+test("selected host profile resolves a matching local credential", () =>
+  withSelectedProfile((keypair) => {
     const profile = loadSelectedRuntimeProfile("codex");
     assert.equal(profile?.profileId, "codex-one");
     assert.equal(profile?.agentPubkey, keypair.pub_key);
@@ -62,12 +84,20 @@ test("selected host profile resolves a matching local credential", async () => {
 
     process.env.ATBASH_ORG_NAME = "OtherOrg";
     assert.throws(() => loadSelectedRuntimeProfile("codex"), /conflicts/);
-  } finally {
-    if (previousRoot === undefined) delete process.env.ATBASH_CONFIG_DIR;
-    else process.env.ATBASH_CONFIG_DIR = previousRoot;
-    if (previousKey === undefined) delete process.env.ATBASH_AGENT_KEY;
-    else process.env.ATBASH_AGENT_KEY = previousKey;
-    if (previousOrg === undefined) delete process.env.ATBASH_ORG_NAME;
-    else process.env.ATBASH_ORG_NAME = previousOrg;
-  }
-});
+  }));
+
+test("a guard built from the selected profile requires a checked judge decision", () =>
+  withSelectedProfile((keypair) => {
+    // Every user who finished setup runs on this path; an audit-tier answer must never permit here either.
+    const seen: Parameters<FromConfig>[0][] = [];
+    const fromConfig = ((options: Parameters<FromConfig>[0]) => {
+      seen.push(options);
+      return {} as ReturnType<FromConfig>;
+    }) as FromConfig;
+    createAtbashGuard("codex", fromConfig);
+    assert.equal(seen.length, 1);
+    assert.equal(seen[0]?.requireEnforcement, true);
+    assert.equal(seen[0]?.failClosed, true);
+    assert.equal(seen[0]?.agentKey, keypair.priv_key);
+    assert.equal(seen[0]?.orgName, "Acme");
+  }));

@@ -24,6 +24,17 @@ export function resolveOrgName(rawValue = resolve("orgName")): string | undefine
   return orgName === "" ? undefined : orgName;
 }
 
+/**
+ * The signing key exactly as SDK 0.9.2 chose it: a non-empty ATBASH_AGENT_KEY, else config.json's
+ * agentKey. Newer SDKs no longer read config.json for the identity, so the plugin passes this value
+ * explicitly; otherwise installs configured through config.json would sign as nobody and every tool
+ * call would be denied. When empty, the SDK's own key-file lookup runs, as it did before.
+ */
+export function resolveAgentKey(rawValue = resolve("agentKey")): string | undefined {
+  const agentKey = rawValue.trim();
+  return agentKey === "" ? undefined : agentKey;
+}
+
 export function resolveTimeoutMs(rawValue = process.env.ATBASH_CODEX_TIMEOUT_MS): number {
   if (rawValue === undefined || rawValue.trim() === "") {
     return DEFAULT_ATBASH_TIMEOUT_MS;
@@ -43,6 +54,10 @@ export function resolveTimeoutMs(rawValue = process.env.ATBASH_CODEX_TIMEOUT_MS)
   return parsed;
 }
 
+export type FromConfig = typeof Atbash.fromConfig;
+
+const sdkFromConfig: FromConfig = (options) => Atbash.fromConfig(options);
+
 /**
  * What the guard should run as.
  *
@@ -52,8 +67,10 @@ export function resolveTimeoutMs(rawValue = process.env.ATBASH_CODEX_TIMEOUT_MS)
  * "configuration is missing or invalid" forever — so a completed setup would
  * never produce a working guard.
  *
- * Falls back to the SDK's own configuration when no profile is selected, which
- * keeps a pre-profile install working.
+ * Falls back to the plugin's own resolution of the SDK configuration when no
+ * profile is selected, which keeps a pre-profile install working: the identity
+ * is passed explicitly (resolveAgentKey), because newer SDKs no longer read
+ * config.json's agentKey themselves.
  */
 export function resolveGuardConfiguration(host: ControlHost = "codex"): GuardConfiguration {
   const profile = loadSelectedRuntimeProfile(host);
@@ -67,14 +84,24 @@ export function resolveGuardConfiguration(host: ControlHost = "codex"): GuardCon
       network: profile.network,
     };
   }
+  const agentKey = resolveAgentKey();
   const orgName = resolveOrgName();
-  return { source: "legacy", ...(orgName === undefined ? {} : { orgName }) };
+  return {
+    source: "legacy",
+    ...(agentKey === undefined ? {} : { agentKey }),
+    ...(orgName === undefined ? {} : { orgName }),
+  };
 }
 
-export function createAtbashGuard(host: ControlHost = "codex"): ToolCallGuard {
+export function createAtbashGuard(
+  host: ControlHost = "codex",
+  fromConfig: FromConfig = sdkFromConfig,
+): ToolCallGuard {
   const configuration = resolveGuardConfiguration(host);
-  return Atbash.fromConfig({
+  return fromConfig({
     failClosed: true,
+    // Explicit, not left to the SDK default: an unchecked audit-tier answer must never permit.
+    requireEnforcement: true,
     ...(configuration.agentKey ? { agentKey: configuration.agentKey } : {}),
     ...(configuration.orgName ? { orgName: configuration.orgName } : {}),
     timeoutMs: resolveTimeoutMs(),

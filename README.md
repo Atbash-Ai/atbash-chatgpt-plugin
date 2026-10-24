@@ -61,6 +61,18 @@ An agent exists only in the environment it was created in: an agent onboarded on
 
 `~/.config/atbash/` is shared with the Atbash Claude Code plugin. Disconnecting `--host codex` leaves the Claude profile untouched; a legacy `config.json`, `guard-client-key`, or `ATBASH_AGENT_KEY` applies to both plugins.
 
+### Which agent key the hook signs with
+
+The hook and `status.cjs` pick the agent key in this order, the same on production and development:
+
+1. `ATBASH_AGENT_KEY`, when it is set and not empty.
+2. `agentKey` in `~/.config/atbash/config.json`.
+3. The key file `~/.config/atbash/guard-client-key`.
+
+With no key in any of them, the hook denies every tool call with "configuration is missing or invalid", and status reports `configuration_error`.
+
+Atbash SDK 0.10.0 (production) and 0.18.0-dev.0 and later (development) no longer read `agentKey` from `config.json` themselves. The plugin passes that value to the SDK explicitly, so installs configured through `config.json` keep signing as the same agent. Prefer the key file or `ATBASH_AGENT_KEY` for new setups: `config.json` is a settings file that every Atbash integration on the machine reads.
+
 ## Set up an agent
 
 Invoke `$atbash-setup` in Codex. The skill starts a short-lived onboarding session and provides a Connect Atbash link. Sign in and verify your wallet in the browser, then review and approve the exact account, organization, plan, and agent changes. The helper finishes setup and saves the agent key locally under `~/.config/atbash/` with restricted permissions. For an existing agent, it opens a local form for the key; the key is not sent to the dashboard or chat.
@@ -90,6 +102,8 @@ node plugins/atbash/runtime/status.cjs
 The commands above assume you are in the repository checkout. From an installed plugin, use the corresponding `runtime/` paths. The status command checks both agent readiness and hook registration. Try a harmless tool call such as listing the current directory after it reports ready.
 
 The guard allows only an SDK `ALLOW` decision with `allow: true`. `HOLD`, `BLOCK`, invalid configuration, and service errors deny the pending call. Enforcement covers tool calls exposed to the host's `PreToolUse` hook.
+
+The guard also requires a checked decision (`requireEnforcement: true`, set explicitly rather than left to the SDK default). An audit-tier answer that only logs the call without judging it (`{"status":"logged"}`) denies the call with "Atbash logged this action but did not check it". Older bundled SDKs (production 0.9.2, development 0.16.4-dev.0) treated that answer as `ALLOW`.
 
 Register the hook with the installer above. The plugin's bundled `hooks/hooks.json` entry runs a bare `node` and a `$PLUGIN_ROOT` placeholder: it depends on `node` being on the host's PATH and on `PLUGIN_ROOT` being exported by the host, so it is not a gate on its own.
 
@@ -141,6 +155,12 @@ npm install --save-exact --save-dev @atbash/sdk-dev@npm:@atbash/sdk@<dev-version
 ```
 
 Then rebuild the runtime for the branch you are on and commit it. Keep the development SDK on the same version the Atbash dashboard's `development` branch uses. The development service endpoint and chain node pools live in `plugins/atbash/build-environments.json`.
+
+Current pins: production `@atbash/sdk` 0.10.0, development `@atbash/sdk-dev` → `@atbash/sdk` 0.19.1-dev.0. The dashboard's `development` branch moved to 0.21.0-dev.0 (private chain only) on 2026-10-23; 0.19.1-dev.0 still knows the retired public development chain, so moving this pin is the next change, in its own pull request (0.21.0-dev.0 drops the public-chain exports this build overrides). Before changing a pin, check:
+
+- that the new version still exports the same production defaults (service endpoint, chain RIDs, node URLs), since production ships the SDK's defaults without overrides;
+- that `resolve("agentKey")` still reads `config.json`, which the key order above depends on (`tests/identity-bridge.test.ts` covers it);
+- the SDK changelog for telemetry changes. From 0.10.0 the SDK sends more usage events to the same Atbash service the judge uses; `ATBASH_TELEMETRY_DISABLED=1` or `{"enabled": false}` in `~/.config/atbash/telemetry.json` turns them off.
 
 ### CI checks
 
